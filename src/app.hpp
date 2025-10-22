@@ -6,6 +6,6 @@ class AE_Window;
 
 struct AlineEngine
 {
-    AE_Window* init_create_window(uint32 w, uint32 h, uint32 flags = 0u);
+    AE_Window* init_create_window(u32 w, u32 h, u32 flags = 0u);
     void execute();
 };

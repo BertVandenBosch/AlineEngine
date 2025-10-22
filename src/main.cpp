@@ -1,12 +1,10 @@
 #include "core/core.hpp"
 #include <stdio.h>
 
-
-
 // #include "core/core.hpp"
-#include "graphics/renderer.hpp"
 #include "core/Allocators.hpp"
 #include "core/Containers.hpp"
+#include "graphics/renderer.hpp"
 
 int main()
 {
@@ -51,22 +49,23 @@ int main()
         Peer(u32 val) : Data(val) {};
 
         u32 Flags = 0;
-        u32 Data = 69;
+        u32 Data  = 69;
     };
 
     // size_t peerSize = sizeof(Peer);
 
     Arena.FreeAll();
 
-    //Array allocated on the stack of the scope
+    // Array allocated on the stack of the scope
     StaticArray<Peer, 16> Peren;
 
-    StaticArray<Peer, 16>* AllocatedPeren = Arena.Create<StaticArray<Peer, 16>>();
+    StaticArray<Peer, 16>* AllocatedPeren =
+        Arena.Create<StaticArray<Peer, 16>>();
 
     printf("gewone peer: %u \n", Peren[4].Data);
     printf("gewone peer: %u \n", AllocatedPeren->Data[4].Data);
 
-    StaticArray<u32, 8> Numbers({1,2,3,4,5});
+    StaticArray<u32, 8> Numbers({1, 2, 3, 4, 5});
 
     // for (uint32 i = 0; i < Numbers.Size(); i++) {
     //     printf("%u, ", Numbers[i]);
@@ -77,13 +76,14 @@ int main()
     Array<Peer> MorePeren(Arena);
     MorePeren = CreateView(Peren);
 
-    for (const Peer& p : MorePeren) {
-        printf("%u, %u \n", p.Data, p.Flags);
-    }
+    for (const Peer& p : MorePeren)
+        {
+            printf("%u, %u \n", p.Data, p.Flags);
+        }
 
     int* getallen = new int[8];
 
-    delete [] getallen;
+    delete[] getallen;
 
     return 0;
 }
