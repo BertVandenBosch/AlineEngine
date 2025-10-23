@@ -5,7 +5,9 @@ IndentWidth: 4
 Language: Cpp
 PointerAlignment: Left
 
-BreakBeforeBraces: GNU
+BreakBeforeBraces: Allman
+
+BreakConstructorInitializers: BeforeColon
 
 AlwaysBreakTemplateDeclarations: Yes
 
