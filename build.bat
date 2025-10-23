@@ -27,11 +27,16 @@ set SRC_DIRS=./src ./src/core
 set BUILD_TYPE=%~1
 set BUILD_TYPE=%BUILD_TYPE: =%
 
+if	"%~2"=="--autorun" (
+	set AUTO_RUN=true
+)
+
 set C_FLAGS=-std=c++20
 set BUILD_DB=false
 if "%~2"=="intellisense" (
     set C_FLAGS=!C_FLAGS! -MJ main.json
     set BUILD_DB=true
+    echo Set to build intellisense
 )
 
 :: Validate build type
@@ -96,12 +101,26 @@ if /i %BUILD_DB%==true (
     type main.json >> compile_commands.json
 
     :: fix for trailing comma error
-    echo {} >> compile_commands.json
+    :: echo {} >> compile_commands.json
 
     echo ] >> compile_commands.json
 
     :: cleanup
     del main.json
+
+    echo Created compile_commands.json
+)
+
+:: out of build dir
+popd
+
+:: auto run
+if	defined AUTO_RUN (
+	if /i "%BUILD_TYPE%"=="debug" (
+		raddbg --project:raddb_proj.txt --auto_run
+	) else (
+		.\build\%OUTPUT_NAME%
+	)
 )
 
 endlocal
