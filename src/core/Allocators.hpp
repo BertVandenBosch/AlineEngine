@@ -9,8 +9,6 @@
 
 namespace MemoryUtils
 {
-constexpr bool is_power_of_two(size_t x) { return (x & (x - 1)) == 0; }
-
 constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 {
     uintptr_t p, a, modulo;

@@ -47,9 +47,9 @@ class StaticArray final
     explicit StaticArray(const T&& defaultValue)
     {
         for (u32 i = 0; i < N; i++)
-            {
-                Data[i] = defaultValue;
-            }
+        {
+            Data[i] = defaultValue;
+        }
     }
     explicit StaticArray(std::initializer_list<T> elems)
     {
@@ -150,17 +150,17 @@ class Array final
         assert(newAmount != 0u);
 
         if (newAmount > _NumAllocated)
-            {
-                Resize(newAmount);
-            }
+        {
+            Resize(newAmount);
+        }
     }
 
     u32 Add(const T&& elem)
     {
         if (NumElements >= _NumAllocated - 1)
-            {
-                Reserve(2 * _NumAllocated);
-            }
+        {
+            Reserve(2 * _NumAllocated);
+        }
 
         NumElements++;
         Data[NumElements] = elem;
@@ -172,9 +172,9 @@ class Array final
     u32 Emplace(Args&&... args)
     {
         if (NumElements >= _NumAllocated - 1)
-            {
-                Reserve(2 * _NumAllocated);
-            }
+        {
+            Reserve(2 * _NumAllocated);
+        }
 
         NumElements++;
         ::new (Data[NumElements]) T(std::forward(args)...);
@@ -194,9 +194,9 @@ class Array final
     void RemoveSlack()
     {
         if (_NumAllocated > NumElements)
-            {
-                Resize(NumElements);
-            }
+        {
+            Resize(NumElements);
+        }
     }
 
     const T& operator[](const u32 index) const
@@ -214,9 +214,9 @@ class Array final
     void operator=(View<T> view)
     {
         if (_NumAllocated < view.NumElements)
-            {
-                Resize(view.NumElements);
-            }
+        {
+            Resize(view.NumElements);
+        }
 
         memcpy(Data, view.Data, view.NumElements * ElemSize);
         NumElements = view.NumElements;
@@ -225,9 +225,9 @@ class Array final
     void operator=(const Array<T>& array)
     {
         if (_NumAllocated < array._NumAllocated)
-            {
-                Resize(array._NumAllocated);
-            }
+        {
+            Resize(array._NumAllocated);
+        }
 
         memcpy(Data, array.Data, array.NumElements * array.ElemSize);
         NumElements = array.NumElements;

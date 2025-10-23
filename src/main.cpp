@@ -1,4 +1,6 @@
+#include "core/BitList.hpp"
 #include "core/core.hpp"
+#include <cassert>
 #include <stdio.h>
 
 // #include "core/core.hpp"
@@ -10,6 +12,33 @@ int main()
 {
 
     AE_Renderer renderer;
+
+    BitList<16> freelist;
+
+    freelist.set_bit(1);
+
+    bool first = freelist[0];
+    bool second = freelist[1];
+
+    u32 first_set = freelist.find_first(true);
+
+    assert(!first);
+    assert(second);
+    assert(first_set == 1);
+
+    freelist.set_bit(12);
+
+    bool twelf = freelist[12];
+    u32 first_from = freelist.find_first(true, 9);
+    u32 first_not_from = freelist.find_first(false, 12);
+
+    assert(twelf);
+    assert(first_from == 12);
+    assert(first_not_from == 13);
+
+    freelist.unset_bit(1);
+
+    assert(!freelist[1]);
 
     renderer.init_renderer();
 

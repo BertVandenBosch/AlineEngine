@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../core/Allocators.hpp"
-#include "../core/Containers.hpp"
+#include "vulkan/vulkan_core.h"
 
 #define VULKAN_HPP_NO_CONSTRUCTORS
 #include <GLFW/glfw3.h>
@@ -19,6 +19,7 @@ class AE_Renderer final
     {
         vk::Instance instance = VK_NULL_HANDLE;
         vk::Device   device   = VK_NULL_HANDLE;
+        VkSurfaceKHR surface  = VK_NULL_HANDLE;
     };
 
   public:
@@ -28,35 +29,38 @@ class AE_Renderer final
     void init_renderer()
     {
         if (!glfwInit())
-            {
-                // TODO(bert): handle glfw errors;
-                return;
-            }
+        {
+            // TODO(bert): handle glfw errors;
+            return;
+        }
 
         // scratch arena allocator for throw away data
         ArenaAllocator<> scratch = ArenaAllocator<>(KB(512u));
 
-        u32          num_glfw_ext = 0u;
+        u32 num_glfw_ext = 0u;
+
         const char** glfw_ext =
             glfwGetRequiredInstanceExtensions(&num_glfw_ext);
 
         if (num_glfw_ext == 0)
-            {
-                // TODO: error handling
-                return;
-            }
+        {
+            // TODO: error handling
+            return;
+        }
 
         vk::ApplicationInfo app_info = {
             .pApplicationName   = "Test app",
             .applicationVersion = vk::makeApiVersion(1, 0, 0, 0),
             .pEngineName        = "Aline Engine",
             .engineVersion      = vk::makeApiVersion(1, 0, 0, 0),
-            .apiVersion         = vk::ApiVersion13};
+            .apiVersion         = vk::ApiVersion13,
+        };
 
         vk::InstanceCreateInfo instance_ci = {
             .pApplicationInfo        = &app_info,
             .enabledExtensionCount   = num_glfw_ext,
-            .ppEnabledExtensionNames = glfw_ext};
+            .ppEnabledExtensionNames = glfw_ext,
+        };
 
         renderObjects.instance = vk::createInstance(instance_ci);
 
@@ -64,6 +68,21 @@ class AE_Renderer final
         GLFWwindow* window =
             glfwCreateWindow(512, 512, "Hello world", NULL, NULL);
 
+        VkResult SurfaceResult = glfwCreateWindowSurface(
+            renderObjects.instance, window, NULL, &renderObjects.surface);
+        if (SurfaceResult != VK_SUCCESS)
+        {
+            return;
+        }
+
+        while (!glfwWindowShouldClose(window))
+        {
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+        }
+
+        vkDestroySurfaceKHR(renderObjects.instance, renderObjects.surface,
+                            NULL);
         renderObjects.instance.destroy();
     }
 };
