@@ -30,11 +30,20 @@ constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 }
 } // namespace MemoryUtils
 
-// Simple Allocator interface
 class IAllocator
 {
   public:
     static constexpr size_t DEFAULT_ALIGNMENT = 2 * sizeof(void*);
+
+    consteval virtual bool is_linear() const { return true; }
+};
+
+// Simple Allocator interface
+template <bool linear = true>
+class IAllocatorImpl : IAllocator
+{
+  public:
+    consteval bool is_linear() const override { return linear; }
 
     virtual void   Init(size_t Size)                              = 0;
     virtual void*  Allocate(size_t Size,
@@ -105,7 +114,7 @@ inline void MoveFrom(AllocatorA* src, AllocatorB* dst)
 }
 
 template <size_t _Alignment = IAllocator::DEFAULT_ALIGNMENT>
-class ArenaAllocator final : public IAllocator
+class ArenaAllocator final : public IAllocatorImpl<true>
 {
   public:
     u8*    buffer        = nullptr;
