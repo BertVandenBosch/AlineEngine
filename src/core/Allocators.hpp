@@ -21,11 +21,11 @@ constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
     modulo = p & (a - 1);
 
     if (modulo != 0)
-        {
-            // If 'p' address is not aligned, push the address to the
-            // next value which is aligned
-            p += a - modulo;
-        }
+    {
+        // If 'p' address is not aligned, push the address to the
+        // next value which is aligned
+        p += a - modulo;
+    }
     return p;
 }
 } // namespace MemoryUtils
@@ -50,18 +50,19 @@ class IAllocator
         return static_cast<T*>(Allocate(sizeof(T), Alignment));
     }
 
-    template <typename T, class... Args> constexpr T* Create(Args&&... args)
+    template <typename T, class... Args>
+    constexpr T* Create(Args&&... args)
     {
         static_assert(std::is_constructible_v<T, Args...>);
 
         void* AllocAddres = Allocate(sizeof(T));
 
         if (AllocAddres)
-            {
-                // Construct object in place
-                ::new (AllocAddres) T(std::forward<Args>(args)...);
-                return static_cast<T*>(AllocAddres);
-            }
+        {
+            // Construct object in place
+            ::new (AllocAddres) T(std::forward<Args>(args)...);
+            return static_cast<T*>(AllocAddres);
+        }
 
         return nullptr;
     }
@@ -72,12 +73,12 @@ class IAllocator
         void* AllocAddress = Allocate(sizeof(T) * N, _Alignment);
 
         if (AllocAddress)
-            {
-                // Construct the space for N elements at the AllocAddress
-                // address
-                ::new (AllocAddress) T[N];
-                return static_cast<T*>(AllocAddress);
-            }
+        {
+            // Construct the space for N elements at the AllocAddress
+            // address
+            ::new (AllocAddress) T[N];
+            return static_cast<T*>(AllocAddress);
+        }
 
         return nullptr;
     }
@@ -119,9 +120,9 @@ class ArenaAllocator final : public IAllocator
         buffer_offset = 0;
 
         if (Size > 0)
-            {
-                Init(Size);
-            }
+        {
+            Init(Size);
+        }
     }
     ~ArenaAllocator() { delete[] buffer; }
 
@@ -149,13 +150,13 @@ class ArenaAllocator final : public IAllocator
             aligned_offset - (uintptr_t)buffer; // Offset in local buffer
 
         if (offset + Size <= buffer_len)
-            {
-                void* result = &buffer[offset];
-                buffer_offset += offset + Size;
+        {
+            void* result = &buffer[offset];
+            buffer_offset += offset + Size;
 
-                // memset(result, 0, Size);
-                return result;
-            }
+            // memset(result, 0, Size);
+            return result;
+        }
 
         // OUT OF MEMORY
         return nullptr;
