@@ -9,7 +9,8 @@
 
 namespace MemoryUtils
 {
-constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
+static constexpr size_t DEFAULT_ALIGNMENT = 2 * sizeof(void*);
+constexpr uintptr_t     align_forward(uintptr_t ptr, size_t align)
 {
     uintptr_t p, a, modulo;
 
@@ -30,31 +31,23 @@ constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 }
 } // namespace MemoryUtils
 
+// Simple Allocator interface
 class IAllocator
 {
   public:
-    static constexpr size_t DEFAULT_ALIGNMENT = 2 * sizeof(void*);
+    virtual bool is_linear() const = 0;
 
-    consteval virtual bool is_linear() const { return true; }
-};
-
-// Simple Allocator interface
-template <bool linear = true>
-class IAllocatorImpl : IAllocator
-{
-  public:
-    consteval bool is_linear() const override { return linear; }
-
-    virtual void   Init(size_t Size)                              = 0;
-    virtual void*  Allocate(size_t Size,
-                            size_t Alignment = DEFAULT_ALIGNMENT) = 0;
-    virtual void   Free(void* ptr)                                = 0;
-    virtual void   FreeAll()                                      = 0;
-    virtual size_t GetSize() const                                = 0;
-    virtual void   GetRawData(void* out_data, u32* out_size)      = 0;
+    virtual void Init(size_t Size) = 0;
+    virtual void*
+                   Allocate(size_t Size,
+                            size_t Alignment = MemoryUtils::DEFAULT_ALIGNMENT) = 0;
+    virtual void   Free(void* ptr)                           = 0;
+    virtual void   FreeAll()                                 = 0;
+    virtual size_t GetSize() const                           = 0;
+    virtual void   GetRawData(void* out_data, u32* out_size) = 0;
 
     template <typename T>
-    constexpr T* Allocate(size_t Alignment = DEFAULT_ALIGNMENT)
+    constexpr T* Allocate(size_t Alignment = MemoryUtils::DEFAULT_ALIGNMENT)
     {
         return static_cast<T*>(Allocate(sizeof(T), Alignment));
     }
@@ -93,28 +86,15 @@ class IAllocatorImpl : IAllocator
     }
 };
 
-// TODO: these implementions will probably only holdup for the ArenaAllocator...
-template <class AllocatorA, class AllocatorB>
-    requires std::is_base_of_v<IAllocator, AllocatorA> &&
-             std::is_base_of_v<IAllocator, AllocatorB>
-inline void CopyFrom(const AllocatorA* src, AllocatorB* dst)
+template <bool Linear>
+class IAllocatorTempl : public IAllocator
 {
-    assert(src->buffer_offset <= dst->buffer_len);
-    std::memcpy(dst->buffer, src->buffer, src->buffer_offset);
-}
+  public:
+    constexpr bool is_linear() const override { return Linear; }
+};
 
-template <class AllocatorA, class AllocatorB>
-    requires std::is_base_of_v<IAllocator, AllocatorA> &&
-             std::is_base_of_v<IAllocator, AllocatorB>
-inline void MoveFrom(AllocatorA* src, AllocatorB* dst)
-{
-    assert(src->buffer_offset <= dst->buffer_len);
-    std::memmove(dst->buffer, src->buffer, src->buffer_offset);
-    src->FreeAll();
-}
-
-template <size_t _Alignment = IAllocator::DEFAULT_ALIGNMENT>
-class ArenaAllocator final : public IAllocatorImpl<true>
+template <size_t _Alignment = MemoryUtils::DEFAULT_ALIGNMENT>
+class ArenaAllocator final : public IAllocatorTempl<true>
 {
   public:
     u8*    buffer        = nullptr;
@@ -122,7 +102,7 @@ class ArenaAllocator final : public IAllocatorImpl<true>
     size_t buffer_offset = 0;
 
   public:
-    ArenaAllocator() = default;
+    constexpr ArenaAllocator() = default;
     explicit ArenaAllocator(size_t Size)
     {
         buffer_len    = 0;
@@ -176,3 +156,22 @@ class ArenaAllocator final : public IAllocatorImpl<true>
     void Free(void* ptr = nullptr) override { assert(ptr); }
     void FreeAll() override { buffer_offset = 0; };
 };
+
+template <class AllocatorA, class AllocatorB>
+    requires std::is_base_of_v<IAllocatorTempl<true>, AllocatorA> &&
+             std::is_base_of_v<IAllocatorTempl<true>, AllocatorB>
+inline void CopyFrom(const AllocatorA* src, AllocatorB* dst)
+{
+    assert(src->buffer_offset <= dst->buffer_len);
+    std::memcpy(dst->buffer, src->buffer, src->buffer_offset);
+}
+
+template <class AllocatorA, class AllocatorB>
+    requires std::is_base_of_v<IAllocatorTempl<true>, AllocatorA> &&
+             std::is_base_of_v<IAllocatorTempl<true>, AllocatorB>
+inline void MoveFrom(AllocatorA* src, AllocatorB* dst)
+{
+    assert(src->buffer_offset <= dst->buffer_len);
+    std::memmove(dst->buffer, src->buffer, src->buffer_offset);
+    src->FreeAll();
+}
