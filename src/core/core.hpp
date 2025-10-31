@@ -15,6 +15,17 @@ typedef unsigned short      u16;
 typedef unsigned int        u32;
 typedef unsigned long long  u64;
 
+struct u128
+{
+	union
+	{
+		u64 ll[2];
+		u32 l[4];
+		u16 s[8];
+		u8  ch[16];
+	}value;
+};
+
 #define KB(size) (size_t)(size * 1024)
 #define MB(size) (size_t)(size * 1024 * 1024)
 #define GB(size) (size_t)(size * 1024 * 1024 * 1024)
