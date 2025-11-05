@@ -3,9 +3,8 @@
 #include "../core/Allocators.hpp"
 #include "vulkan/vulkan_core.h"
 
-#define VULKAN_HPP_NO_CONSTRUCTORS
 #include <GLFW/glfw3.h>
-#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan.h>
 
 struct AE_Window
 {
@@ -17,8 +16,8 @@ class AE_Renderer final
 {
     struct _RenderObjects
     {
-        vk::Instance instance = VK_NULL_HANDLE;
-        vk::Device   device   = VK_NULL_HANDLE;
+        VkInstance   instance = VK_NULL_HANDLE;
+        VkDevice     device   = VK_NULL_HANDLE;
         VkSurfaceKHR surface  = VK_NULL_HANDLE;
     };
 
@@ -48,21 +47,28 @@ class AE_Renderer final
             return;
         }
 
-        vk::ApplicationInfo app_info = {
+        VkApplicationInfo app_info = {
+            .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pNext              = nullptr,
             .pApplicationName   = "Test app",
-            .applicationVersion = vk::makeApiVersion(1, 0, 0, 0),
+            .applicationVersion = VK_MAKE_API_VERSION(1, 0, 0, 0),
             .pEngineName        = "Aline Engine",
-            .engineVersion      = vk::makeApiVersion(1, 0, 0, 0),
-            .apiVersion         = vk::ApiVersion13,
+            .engineVersion      = VK_MAKE_API_VERSION(1, 0, 0, 0),
+            .apiVersion         = VK_API_VERSION_1_3,
         };
 
-        vk::InstanceCreateInfo instance_ci = {
+        VkInstanceCreateInfo instance_ci = {
+            .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pNext                   = nullptr,
+            .flags                   = 0u,
             .pApplicationInfo        = &app_info,
+            .enabledLayerCount       = 0,
+            .ppEnabledLayerNames     = nullptr,
             .enabledExtensionCount   = num_glfw_ext,
             .ppEnabledExtensionNames = glfw_ext,
         };
 
-        renderObjects.instance = vk::createInstance(instance_ci);
+        vkCreateInstance(&instance_ci, nullptr, &renderObjects.instance);
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         GLFWwindow* window =
@@ -83,6 +89,6 @@ class AE_Renderer final
 
         vkDestroySurfaceKHR(renderObjects.instance, renderObjects.surface,
                             NULL);
-        renderObjects.instance.destroy();
+        vkDestroyInstance(renderObjects.instance, nullptr);
     }
 };
