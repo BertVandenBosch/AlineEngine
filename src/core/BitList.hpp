@@ -2,9 +2,11 @@
 
 #include "Intrinsics.hpp"
 #include "core.hpp"
-#include <cassert>
 
-#define BATCH_SEARCH 1
+#include <cassert>
+#include <cstring>
+#include <immintrin.h>
+#include <initializer_list>
 
 /*
  * Free list helper DS.
@@ -12,17 +14,23 @@
  * 0|false:	free slot
  * 1|true:	taken
  */
-template <u32 N, typename WordType = u8, typename BatchWordType = u32>
+template <u32 N, typename WordType = u32>
 struct BitList final
 {
     static constexpr u32 BitsPerWord = sizeof(WordType) * 8u;
     static constexpr u32 NumWords    = round_to(N, BitsPerWord) / BitsPerWord;
 
   public:
-    WordType data[NumWords] = {0};
+    alignas(16) WordType data[NumWords] = {0};
 
   public:
     constexpr BitList() {}
+
+    explicit BitList(std::initializer_list<WordType> il)
+    {
+        const u32 usable_size = __min((u32)il.size(), NumWords) * sizeof(NumWords);
+        memcpy(&data, il.begin(), usable_size);
+    }
 
     void set_bit(u32 index)
     {
@@ -105,4 +113,68 @@ struct BitList final
 
         return (data[word_index] & mask);
     }
+
+    bool operator==(const BitList<N, WordType>& other) const
+    {
+        return memcmp(&data, &other.data, N * sizeof(WordType));
+    }
 };
+
+template <u32 N>
+BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
+{
+	assert(BitList<N>::BitsPerWord <= 128u);
+
+    BitList<N> result;
+
+    constexpr u32 words_per_chunk = 128u / BitList<N>::BitsPerWord;
+
+    for (u32 i = 0; i < BitList<N>::NumWords; i += words_per_chunk)
+    {
+        __m128i chunk_a;
+        __m128i chunk_b;
+
+        u128 pad_chunk_a;
+        u128 pad_chunk_b;
+
+        bool pad_chunk = i + words_per_chunk >= BitList<N>::NumWords;
+        if (pad_chunk)
+        {
+            const u32 num_remaining_bytes =
+                (BitList<N>::NumWords - i) * (BitList<N>::BitsPerWord / 8u);
+
+            // init padded chunks to zero
+            pad_chunk_a = {.value = {.ll = {0u, 0u}}};
+            pad_chunk_b = {.value = {.ll = {0u, 0u}}};
+
+            memcpy(&pad_chunk_a, &a.data[i], num_remaining_bytes);
+            memcpy(&pad_chunk_b, &b.data[i], num_remaining_bytes);
+
+            chunk_a = _mm_load_si128((__m128i*)&pad_chunk_a.value);
+            chunk_b = _mm_load_si128((__m128i*)&pad_chunk_b.value);
+        }
+        else
+        {
+            chunk_a = _mm_load_si128((__m128i*)&a.data[i]);
+            chunk_b = _mm_load_si128((__m128i*)&b.data[i]);
+        }
+
+        __m128i chunk_result = _mm_xor_si128(chunk_a, chunk_b);
+
+        // copy result from register to resulting array
+        memcpy(&result.data[i], &chunk_result, sizeof(__m128i));
+    }
+
+// VALIDATION
+#if 0
+    BitList<N> result_validation;
+    for (u32 i = 0u; i < BitList<N>::NumWords; i++)
+    {
+        result_validation.data[i] = a.data[i] ^ b.data[i];
+    }
+
+    assert(result == result_validation);
+#endif
+
+        return result;
+}
