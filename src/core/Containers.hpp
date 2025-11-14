@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstring>
 #include <initializer_list>
+#include <type_traits>
 
 template <typename T>
 struct View
@@ -92,6 +93,7 @@ class StaticArray final
 template <typename T>
 class Array final
 {
+  public:
     static constexpr u32 ElemSize = sizeof(T);
 
   public:
@@ -101,19 +103,23 @@ class Array final
     u32         _NumAllocated = 0;
     IAllocator& _Allocator;
 
-    explicit Array(IAllocator& allocator, u32 reservedNum = 4)
+    explicit Array(IAllocator& allocator, u32 reservedNum = 0)
         : _Allocator(allocator)
     {
-        Data          = _Allocator.CreateArray<T>(reservedNum);
-        _NumAllocated = reservedNum;
+        if (reservedNum > 0)
+        {
+            Data          = _Allocator.CreateArray<T>(reservedNum);
+            _NumAllocated = round_up_pow2(reservedNum);
+        }
     }
 
-    explicit Array(IAllocator& allocator, std::initializer_list<T> initList)
+    Array(IAllocator& allocator, std::initializer_list<T> initList)
         : _Allocator(allocator)
     {
+        Resize(initList.size());
+
         Data          = _Allocator.CreateArray<T>(initList.size());
         _NumAllocated = initList.size();
-        NumElements   = initList.size();
 
         memcpy(Data, initList.begin(), initList.size() * ElemSize);
     }
@@ -133,8 +139,9 @@ class Array final
 
     void Resize(u32 newSize)
     {
-        // TODO: make size a power of 2?
-        T* temp = _Allocator.CreateArray<T>(newSize);
+        const u32 new_size_pow2 = round_up_pow2(newSize);
+
+        T* temp = _Allocator.CreateArray<T>(new_size_pow2);
         assert(temp != nullptr);
         // copy over old data to new TODO: what if we work with a paged
         // allocator?
@@ -142,7 +149,7 @@ class Array final
         _Allocator.Free(Data);
 
         Data          = temp;
-        _NumAllocated = newSize;
+        _NumAllocated = new_size_pow2;
     }
 
     void Reserve(u32 newAmount)
@@ -199,6 +206,21 @@ class Array final
         }
     }
 
+    void Append(View<const T> view)
+    {
+        const u32 new_size = NumElements + view.NumElements;
+        if (new_size > _NumAllocated)
+        {
+            Resize(new_size);
+        }
+
+        // copy over new elements
+        memcpy(&Data[NumElements], view.Data, ElemSize * view.NumElements);
+        NumElements += view.NumElements;
+    }
+
+    // ---------------- Operator overloads  ----------------
+
     const T& operator[](const u32 index) const
     {
         assert(index <= NumElements);
@@ -233,6 +255,27 @@ class Array final
         NumElements = array.NumElements;
     }
 
+    void operator=(std::initializer_list<T> list)
+    {
+        if (_NumAllocated < list.size())
+        {
+            Resize(list.size());
+        }
+        memcpy(Data, list.begin(), list.size() * ElemSize);
+        NumElements = list.size();
+    }
+
+    template <u32 NUM_STRINGS>
+        requires(std::is_class_v<char>(std::remove_pointer<T>::type))
+    void operator=(const char strings[NUM_STRINGS])
+    {
+        if (_NumAllocated < NUM_STRINGS)
+        {
+            Resize(NUM_STRINGS);
+        }
+        memcpy(Data, strings, NUM_STRINGS * ElemSize);
+    }
+
     // ---------------- Ranged for iteration interface ----------------
     T* begin() { return &Data[0]; }
 
@@ -240,7 +283,7 @@ class Array final
 };
 
 template <typename T, u32 N>
-inline View<T> CreateView(StaticArray<T, N>& array, u32 startIndex = 0,
+constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 startIndex = 0,
                           u32 size = N)
 {
     const u32 size_clamped = std::min(N - startIndex, size);
@@ -249,7 +292,7 @@ inline View<T> CreateView(StaticArray<T, N>& array, u32 startIndex = 0,
 }
 
 template <typename T, u32 N>
-inline View<const T> CreateView(const StaticArray<T, N>& array,
+constexpr inline View<const T> CreateView(const StaticArray<T, N>& array,
                                 u32 startIndex = 0, u32 size = N)
 {
     const u32 size_clamped = std::min(N - startIndex, size);
@@ -261,22 +304,56 @@ inline View<const T> CreateView(const StaticArray<T, N>& array,
     return Result;
 }
 
-template <typename T, u32 N>
-inline View<T> CreateView(const T* array)
+template <typename T>
+constexpr inline View<T> CreateView(Array<T>& array, u32 startIndex,
+                          u32 size)
 {
-    View<T> Result = {
-        .Data        = array,
-        .NumElements = N,
+    const u32 size_clamped = std::min(array.NumElements - startIndex, size);
+    View<T> Result = {.Data = &array[startIndex], .NumElements = size_clamped};
+    return Result;
+}
+
+template <typename T>
+constexpr inline View<const T> CreateConstView(const Array<T>& array,
+                                u32 startIndex, u32 size)
+{
+    const u32 size_clamped = std::min(array.NumElements - startIndex, size);
+
+    View<const T> Result = {
+        .Data        = &array[startIndex],
+        .NumElements = size_clamped,
     };
     return Result;
 }
 
-template <typename T, u32 N>
-inline View<const T> CreateView(T* array)
+template <typename T>
+constexpr inline View<T> CreateView(Array<T>& array)
+{
+	return CreateView(array, 0, array.NumElements);
+}
+
+template <typename T>
+constexpr inline View<const T> CreateConstView(const Array<T>& array)
+{
+	return CreateConstView(array, 0, array.NumElements);
+}
+
+template <typename T>
+constexpr inline View<T> CreateView(const T* array, u32 size)
 {
     View<T> Result = {
         .Data        = array,
-        .NumElements = N,
+        .NumElements = size,
+    };
+    return Result;
+}
+
+template <typename T>
+constexpr inline View<const T> CreateView(T* array, u32 size)
+{
+    View<T> Result = {
+        .Data        = array,
+        .NumElements = size,
     };
     return Result;
 }
