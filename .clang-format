@@ -5,6 +5,8 @@ IndentWidth: 4
 Language: Cpp
 PointerAlignment: Left
 
+SortIncludes: false
+
 BreakBeforeBraces: Allman
 
 BreakConstructorInitializers: BeforeColon
@@ -25,4 +27,3 @@ AlignConsecutiveDeclarations:
   Enabled: true
   AcrossEmptyLines: false
   AcrossComments: true
----
