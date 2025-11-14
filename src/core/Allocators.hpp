@@ -9,8 +9,10 @@
 
 namespace MemoryUtils
 {
+
 static constexpr size_t DEFAULT_ALIGNMENT = 2 * sizeof(void*);
-constexpr uintptr_t     align_forward(uintptr_t ptr, size_t align)
+
+constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 {
     uintptr_t p, a, modulo;
 
@@ -153,7 +155,7 @@ class ArenaAllocator final : public IAllocatorTempl<true>
 
     size_t GetSize() const override { return buffer_len; }
 
-    void Free(void* ptr = nullptr) override { assert(ptr); }
+    void Free(void*) override {}
     void FreeAll() override { buffer_offset = 0; };
 };
 
