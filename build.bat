@@ -47,11 +47,11 @@ if /i not "%BUILD_TYPE%"=="debug" if /i not "%BUILD_TYPE%"=="release" (
 
 :: Set compiler flags based on build type
 if /i "%BUILD_TYPE%"=="debug" (
-    set COMPILER_FLAGS=-g -O0 -MD -Wall -Wextra
+    set COMPILER_FLAGS=-g -O0 -MD -Wall
     set OUTPUT_NAME=AlineEngine_debug.exe
     echo Building DEBUG version...
 ) else (
-    set COMPILER_FLAGS=-O2 -MD -Wall -Wextra
+    set COMPILER_FLAGS=-O2 -MD -Wall
     set OUTPUT_NAME=AlineEngine_release.exe
     echo Building RELEASE version...
 )
@@ -84,7 +84,7 @@ pushd build
 
 ::/Fe:%OUTPUT_NAME%
 :: Compile all .cpp files
-clang++ %C_FLAGS% %COMPILER_FLAGS% %INCLUDE_FLAGS%   ..\src\main.cpp -L"C:\Users\bert\Desktop\AlineEngine\third-party\glfw3.4\lib-vc2022" -lglfw3dll -lgdi32  -l %VULKAN_SDK%\Lib\vulkan-1.lib -o %OUTPUT_NAME%
+clang++ %C_FLAGS% %COMPILER_FLAGS% %INCLUDE_FLAGS%  ..\src\main.cpp ..\src\graphics\renderer.cpp -L"C:\Users\bert\Desktop\AlineEngine\third-party\glfw3.4\lib-vc2022" -lglfw3dll -lgdi32  -l %VULKAN_SDK%\Lib\vulkan-1.lib -o %OUTPUT_NAME%
 
 if errorlevel 1 (
     echo.

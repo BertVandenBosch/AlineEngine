@@ -33,7 +33,7 @@ constexpr i32 find_lsb(u64 value)
 #endif
 }
 
-constexpr i32 find_msb(u32 value)
+constexpr inline i32 find_msb(u32 value)
 {
     if (value == 0u)
     {

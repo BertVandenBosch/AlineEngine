@@ -88,6 +88,10 @@ class StaticArray final
         const u32 Size = std::min(N, view.NumElements);
         memcpy(Data, view.Data, Size * ElemSize);
     }
+
+    // ---------------- Implicit casts to views ----------------
+    operator View<T>() const { return CreateConstView(*this); }
+    operator View<T>() { return CreateView(*this); }
 };
 
 template <typename T>
@@ -162,15 +166,14 @@ class Array final
         }
     }
 
-    u32 Add(const T&& elem)
+    u32 Add(const T& elem)
     {
         if (NumElements >= _NumAllocated - 1)
         {
             Reserve(2 * _NumAllocated);
         }
 
-        NumElements++;
-        Data[NumElements] = elem;
+        Data[NumElements++] = elem;
 
         return NumElements;
     }
@@ -183,8 +186,7 @@ class Array final
             Reserve(2 * _NumAllocated);
         }
 
-        NumElements++;
-        ::new (Data[NumElements]) T(std::forward(args)...);
+        ::new (Data[NumElements++]) T(std::forward(args)...);
 
         return NumElements;
     }
@@ -194,8 +196,8 @@ class Array final
     {
         assert(index < _NumAllocated);
 
-        NumElements++;
         ::new (Data[index]) T(std::forward(args)...);
+        NumElements++;
     }
 
     void RemoveSlack()
@@ -280,11 +282,17 @@ class Array final
     T* begin() { return &Data[0]; }
 
     T* end() { return &Data[NumElements]; }
+
+    // ---------------- Implicit casts to views ----------------
+    operator View<T>() const { return CreateConstView(*this); }
+    operator View<T>() { return CreateView(*this); }
 };
 
+
+
 template <typename T, u32 N>
-constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 startIndex = 0,
-                          u32 size = N)
+constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 size = N,
+                                    u32 startIndex = 0)
 {
     const u32 size_clamped = std::min(N - startIndex, size);
     View<T> Result = {.Data = &array[startIndex], .NumElements = size_clamped};
@@ -292,8 +300,8 @@ constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 startIndex = 0
 }
 
 template <typename T, u32 N>
-constexpr inline View<const T> CreateView(const StaticArray<T, N>& array,
-                                u32 startIndex = 0, u32 size = N)
+constexpr inline View<const T> CreateView(const StaticArray<T, N>& array, u32 size = N,
+                                          u32 startIndex = 0)
 {
     const u32 size_clamped = std::min(N - startIndex, size);
 
@@ -305,8 +313,7 @@ constexpr inline View<const T> CreateView(const StaticArray<T, N>& array,
 }
 
 template <typename T>
-constexpr inline View<T> CreateView(Array<T>& array, u32 startIndex,
-                          u32 size)
+constexpr inline View<T> CreateView(Array<T>& array, u32 size, u32 startIndex)
 {
     const u32 size_clamped = std::min(array.NumElements - startIndex, size);
     View<T> Result = {.Data = &array[startIndex], .NumElements = size_clamped};
@@ -314,8 +321,7 @@ constexpr inline View<T> CreateView(Array<T>& array, u32 startIndex,
 }
 
 template <typename T>
-constexpr inline View<const T> CreateConstView(const Array<T>& array,
-                                u32 startIndex, u32 size)
+constexpr inline View<const T> CreateConstView(const Array<T>& array, u32 size, u32 startIndex)
 {
     const u32 size_clamped = std::min(array.NumElements - startIndex, size);
 
@@ -329,13 +335,13 @@ constexpr inline View<const T> CreateConstView(const Array<T>& array,
 template <typename T>
 constexpr inline View<T> CreateView(Array<T>& array)
 {
-	return CreateView(array, 0, array.NumElements);
+    return CreateView(array, array.NumElements, 0u);
 }
 
 template <typename T>
 constexpr inline View<const T> CreateConstView(const Array<T>& array)
 {
-	return CreateConstView(array, 0, array.NumElements);
+    return CreateConstView(array, array.NumElements, 0u);
 }
 
 template <typename T>

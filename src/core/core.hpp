@@ -33,6 +33,10 @@ struct u128
 template <typename SizeType>
 constexpr bool is_power_of_two(SizeType x)
 {
+    if (x == 0)
+    {
+        return false;
+    }
     return (x & (x - 1)) == 0;
 }
 
@@ -57,7 +61,7 @@ constexpr inline u32 round_up_pow2(u32 value)
 
 constexpr inline u32 round_down_pow2(u32 value)
 {
-	return value == 1u ? 0u : (1u << (32 - __builtin_clz(value) - 1u));
+    return value == 1u ? 0u : (1u << (32 - __builtin_clz(value) - 1u));
 }
 
 constexpr inline u64 round_up_pow2(u64 value)
@@ -67,5 +71,5 @@ constexpr inline u64 round_up_pow2(u64 value)
 
 constexpr inline u64 round_down_pow2(u64 value)
 {
-	return value == 1u ? 0u : (1u << (64 - __builtin_clzll(value) - 1u));
+    return value == 1u ? 0u : (1u << (64 - __builtin_clzll(value) - 1u));
 }

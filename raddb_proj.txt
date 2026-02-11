@@ -1,12 +1,25 @@
 // raddbg 0.9.21 project file
 
-recent_file: path: "src/main.cpp"
-recent_file: path: "src/core/FreeList.hpp"
-recent_file: path: "d:/os/obj/amd64fre/minkernel/crts/ucrt/src/appcrt/startup/mt/objfre/amd64/minkernel/crts/ucrt/src/appcrt/startup/abort.cpp"
 recent_file: path: "src/graphics/renderer.hpp"
+recent_file: path: "d:/os/obj/amd64fre/minkernel/crts/ucrt/src/appcrt/startup/mt/objfre/amd64/minkernel/crts/ucrt/src/appcrt/startup/abort.cpp"
+recent_file: path: "d:/os/obj/amd64fre/minkernel/crts/ucrt/src/appcrt/startup/mt/objfre/amd64/minkernel/crts/ucrt/src/appcrt/startup/assert.cpp"
+recent_file: path: "D:/a/_work/1/s/src/vctools/crt/vcstartup/src/startup/exe_common.inl"
+recent_file: path: "src/core/Containers.hpp"
+recent_file: path: "src/graphics/renderer.cpp"
+recent_file: path: "src/core/Algorithms/Search.hpp"
+recent_file: path: "src/core/Allocators.hpp"
+recent_file: path: "src/core/BitList.hpp"
+recent_file: path: "src/main.cpp"
+recent_file: path: "src/core/Intrinsics.hpp"
+recent_file: path: "src/core/FreeList.hpp"
 target:
 {
   executable: "build/AlineEngine_debug.exe"
   working_directory: "../AlineEngine"
   enabled: 1
+}
+watch_pin:
+{
+  expression: VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+  source_location: "src/graphics/renderer.cpp:23:1"
 }

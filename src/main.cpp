@@ -17,7 +17,7 @@ int main()
 
     freelist.set_bit(1);
 
-    bool first = freelist[0];
+    bool first  = freelist[0];
     bool second = freelist[1];
 
     u32 first_set = freelist.find_first(true);
@@ -28,9 +28,9 @@ int main()
 
     freelist.set_bit(12);
 
-    bool twelf = freelist[12];
-    u32 first_from = freelist.find_first(true, 9);
-    u32 first_not_from = freelist.find_first(false, 12);
+    bool twelf          = freelist[12];
+    u32  first_from     = freelist.find_first(true, 9);
+    u32  first_not_from = freelist.find_first(false, 12);
 
     assert(twelf);
     assert(first_from == 12);
@@ -39,6 +39,11 @@ int main()
     freelist.unset_bit(1);
 
     assert(!freelist[1]);
+
+    BitList<512> list_a({2, 4, 8, 16});
+    BitList<512> list_b({2, 8, 4, 16});
+
+    bitlist_changed(list_a, list_b);
 
     renderer.init_renderer();
 
@@ -106,9 +111,9 @@ int main()
     MorePeren = CreateView(Peren);
 
     for (const Peer& p : MorePeren)
-        {
-            printf("%u, %u \n", p.Data, p.Flags);
-        }
+    {
+        printf("%u, %u \n", p.Data, p.Flags);
+    }
 
     int* getallen = new int[8];
 
