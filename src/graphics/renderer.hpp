@@ -9,10 +9,8 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
-#include "../core/Algorithms/Search.hpp"
 #include "../core/Allocators.hpp"
 #include "../core/Containers.hpp"
-#include "vulkan/vulkan_core.h"
 
 struct AE_Window
 {
@@ -49,7 +47,7 @@ class AE_Renderer final
         }
 
         // scratch arena allocator for throw away data
-        ArenaAllocator<> scratch = ArenaAllocator<>(KB(512u));
+        ArenaAllocator scratch = ArenaAllocator(KB(512u));
 
         u32 num_glfw_instance_ext = 0u;
 
@@ -64,47 +62,18 @@ class AE_Renderer final
 
         // Get available extensions
         u32 available_instance_ext_count = 0u;
-        vkEnumerateInstanceExtensionProperties(nullptr, &available_instance_ext_count,
-                                               nullptr);
+        vkEnumerateInstanceExtensionProperties(
+            nullptr, &available_instance_ext_count, nullptr);
 
         // create array in scratch alloc with reserved size of available
         // extensions
-        Array<VkExtensionProperties> available_instance_ext(scratch,
-                                                   available_instance_ext_count);
+        Array<VkExtensionProperties> available_instance_ext(
+            scratch, available_instance_ext_count);
 
-        vkEnumerateInstanceExtensionProperties(nullptr, &available_instance_ext_count,
+        vkEnumerateInstanceExtensionProperties(nullptr,
+                                               &available_instance_ext_count,
                                                available_instance_ext.Data);
         available_instance_ext.NumElements = available_instance_ext_count;
-
-
-        // constexpr u32 num_instance_extensions_wanted =
-        //     sizeof(extensions_wanted) / VK_MAX_EXTENSION_NAME_SIZE;
-
-        // using ExtT = char[VK_MAX_EXTENSION_NAME_SIZE];
-
-        // Array<ExtT> req_instance_extensions(scratch,
-        //                            num_instance_extensions_wanted + num_glfw_instance_ext);
-        // req_instance_extensions.Append({.Data        = &extensions_wanted[0],
-        //                        .NumElements = sizeof(extensions_wanted) /
-        //                                       VK_MAX_EXTENSION_NAME_SIZE});
-        // for (u32 i = 0; i < num_glfw_instance_ext; i++)
-        // {
-        //     strcpy_s(req_instance_extensions.Data[req_instance_extensions.NumElements + i],
-        //              glfw_instance_ext[i]);
-        // }
-        // req_instance_extensions.NumElements += num_glfw_instance_ext;
-
-        // // check if required extensions are available
-        // for (const ExtT& ext : req_instance_extensions)
-        // {
-        //     if (!AE::find_linear(
-        //             CreateConstView(available_instance_ext), ext,
-        //             [](const VkExtensionProperties& ext, const ExtT& str)
-        //             { return strcmp(ext.extensionName, str) == 0; }))
-        //     {
-        //         return;
-        //     }
-        // }
 
         VkApplicationInfo app_info = {
             .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -127,7 +96,8 @@ class AE_Renderer final
             .ppEnabledExtensionNames = glfw_instance_ext,
         };
 
-        VkResult InstanceResult = vkCreateInstance(&instance_ci, nullptr, &renderObjects.instance);
+        VkResult InstanceResult =
+            vkCreateInstance(&instance_ci, nullptr, &renderObjects.instance);
         assert(InstanceResult == VK_SUCCESS);
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -198,9 +168,8 @@ class AE_Renderer final
         //     .features = features_10,
         // };
 
-        VkPhysicalDeviceFeatures device_features =
-        {
-        	.multiDrawIndirect = true,
+        VkPhysicalDeviceFeatures device_features = {
+            .multiDrawIndirect = true,
         };
 
         // query available devices
@@ -266,7 +235,7 @@ class AE_Renderer final
         // dedicated compute queue not required as my gpu does not support it :(
         assert(graphics_q_idx >= 0 && transfer_q_idx >= 0);
 
-        float queue_priority = 0.0f;
+        float                          queue_priority = 0.0f;
         Array<VkDeviceQueueCreateInfo> queues_ci(scratch, 2);
         {
             {
@@ -296,29 +265,17 @@ class AE_Renderer final
             }
         }
 
-        //test manual extension array smh
-        // const char* ext_manual[] = {"VK_KHR_surface", "VK_KHR_win32_surface"};
-
-        // const char* extensions_wanted[] = {
-        //     "VK_LAYER_KHRONOS_validation",
-        // };
-
         // Creating logical device
         VkDeviceCreateInfo device_ci = {
-            .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            // .pNext                   = &device_features,
-            .queueCreateInfoCount    = queues_ci.NumElements,
-            .pQueueCreateInfos       = queues_ci.Data,
-            // .enabledExtensionCount   = req_extensions.NumElements,
-            // .ppEnabledExtensionNames = req_ext_char_arr.Data,
-            // .enabledExtensionCount = 0,
-            // .ppEnabledExtensionNames = nullptr,
-            .pEnabledFeatures = &device_features
-        };
+            .sType                = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .pNext                = &features_11,
+            .queueCreateInfoCount = queues_ci.NumElements,
+            .pQueueCreateInfos    = queues_ci.Data,
+            .pEnabledFeatures     = &device_features};
 
-
-        VkResult create_device_result = vkCreateDevice(renderObjects.physical_device, &device_ci, nullptr,
-                       &renderObjects.device);
+        VkResult create_device_result =
+            vkCreateDevice(renderObjects.physical_device, &device_ci, nullptr,
+                           &renderObjects.device);
 
         assert(create_device_result == VK_SUCCESS);
 

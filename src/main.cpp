@@ -45,7 +45,7 @@ int main()
 
     bitlist_changed(list_a, list_b);
 
-    renderer.init_renderer();
+    // renderer.init_renderer();
 
     // uint32 FoundDevices = 0u;
     // VkPhysicalDevice Devices[8] = {};
@@ -93,11 +93,13 @@ int main()
     // Array allocated on the stack of the scope
     StaticArray<Peer, 16> Peren;
 
-    StaticArray<Peer, 16>* AllocatedPeren =
-        Arena.Create<StaticArray<Peer, 16>>();
+    StaticArray<Peer, 16>* AllocatedPeren = nullptr;
+    MemoryHandle peren_memory = Arena.Create(&AllocatedPeren);
 
     printf("gewone peer: %u \n", Peren[4].Data);
     printf("gewone peer: %u \n", AllocatedPeren->Data[4].Data);
+
+    Arena.Free(peren_memory);
 
     StaticArray<u32, 8> Numbers({1, 2, 3, 4, 5});
 

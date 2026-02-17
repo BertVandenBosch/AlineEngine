@@ -30,8 +30,19 @@ struct u128
 #define MB(size) (size_t)(size * 1024 * 1024)
 #define GB(size) (size_t)(size * 1024 * 1024 * 1024)
 
+template <u32 N, typename ReturnT = u32>
+requires (N > 0u)
+constexpr ReturnT max_uint_value()
+{
+    constexpr ReturnT max_value  = ~0;
+    constexpr u32     max_bits   = sizeof(ReturnT) * 8u;
+    constexpr u32     num_shifts = max_bits - N;
+
+    return (max_value >> num_shifts);
+}
+
 template <typename SizeType>
-constexpr bool is_power_of_two(SizeType x)
+constexpr bool is_power_of_two(SizeType x) noexcept
 {
     if (x == 0)
     {
@@ -39,6 +50,9 @@ constexpr bool is_power_of_two(SizeType x)
     }
     return (x & (x - 1)) == 0;
 }
+
+template <u32 N>
+concept is_power_of_two_v = is_power_of_two(N);
 
 template <typename SizeType>
 constexpr SizeType round_to(SizeType value, SizeType roundTo)

@@ -104,15 +104,16 @@ class Array final
     T*  Data        = nullptr;
     u32 NumElements = 0;
 
-    u32         _NumAllocated = 0;
-    IAllocator& _Allocator;
+    u32          _NumAllocated = 0;
+    IAllocator&  _Allocator;
+    MemoryHandle memory_handle;
 
     explicit Array(IAllocator& allocator, u32 reservedNum = 0)
         : _Allocator(allocator)
     {
         if (reservedNum > 0)
         {
-            Data          = _Allocator.CreateArray<T>(reservedNum);
+            memory_handle = _Allocator.CreateArray<T>(Data, reservedNum);
             _NumAllocated = round_up_pow2(reservedNum);
         }
     }
@@ -122,7 +123,7 @@ class Array final
     {
         Resize(initList.size());
 
-        Data          = _Allocator.CreateArray<T>(initList.size());
+        memory_handle = _Allocator.CreateArray<T>(&Data, initList.size());
         _NumAllocated = initList.size();
 
         memcpy(Data, initList.begin(), initList.size() * ElemSize);
@@ -130,14 +131,14 @@ class Array final
 
     Array(const Array<T>& array) : _Allocator(array._Allocator)
     {
-        Data = _Allocator.CreateArray<T>(array.NumElements);
+        memory_handle = _Allocator.CreateArray<T>(Data, array.NumElements);
 
         memcpy(Data, array.Data, array.NumElements * ElemSize);
         NumElements   = array.NumElements;
         _NumAllocated = array.NumElements;
     }
 
-    ~Array() { _Allocator.Free(Data); }
+    ~Array() { _Allocator.Free(memory_handle); }
 
     u32 Size() const { return NumElements; }
 
@@ -145,14 +146,17 @@ class Array final
     {
         const u32 new_size_pow2 = round_up_pow2(newSize);
 
-        T* temp = _Allocator.CreateArray<T>(new_size_pow2);
-        assert(temp != nullptr);
-        // copy over old data to new TODO: what if we work with a paged
-        // allocator?
+        T*           temp = nullptr;
+        MemoryHandle new_memory =
+            _Allocator.CreateArray<T>(&temp, new_size_pow2);
+        assert(new_memory.is_valid());
+
+        // copy over old data to new        // allocator?
         memcpy(temp, Data, NumElements * ElemSize);
-        _Allocator.Free(Data);
+        _Allocator.Free(memory_handle);
 
         Data          = temp;
+        memory_handle = new_memory;
         _NumAllocated = new_size_pow2;
     }
 
@@ -288,8 +292,6 @@ class Array final
     operator View<T>() { return CreateView(*this); }
 };
 
-
-
 template <typename T, u32 N>
 constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 size = N,
                                     u32 startIndex = 0)
@@ -300,8 +302,8 @@ constexpr inline View<T> CreateView(StaticArray<T, N>& array, u32 size = N,
 }
 
 template <typename T, u32 N>
-constexpr inline View<const T> CreateView(const StaticArray<T, N>& array, u32 size = N,
-                                          u32 startIndex = 0)
+constexpr inline View<const T> CreateView(const StaticArray<T, N>& array,
+                                          u32 size = N, u32 startIndex = 0)
 {
     const u32 size_clamped = std::min(N - startIndex, size);
 
@@ -321,7 +323,8 @@ constexpr inline View<T> CreateView(Array<T>& array, u32 size, u32 startIndex)
 }
 
 template <typename T>
-constexpr inline View<const T> CreateConstView(const Array<T>& array, u32 size, u32 startIndex)
+constexpr inline View<const T> CreateConstView(const Array<T>& array, u32 size,
+                                               u32 startIndex)
 {
     const u32 size_clamped = std::min(array.NumElements - startIndex, size);
 
