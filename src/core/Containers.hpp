@@ -113,7 +113,7 @@ class Array final
     {
         if (reservedNum > 0)
         {
-            memory_handle = _Allocator.CreateArray<T>(Data, reservedNum);
+            memory_handle = _Allocator.CreateArray<T>(&Data, reservedNum);
             _NumAllocated = round_up_pow2(reservedNum);
         }
     }
@@ -131,7 +131,7 @@ class Array final
 
     Array(const Array<T>& array) : _Allocator(array._Allocator)
     {
-        memory_handle = _Allocator.CreateArray<T>(Data, array.NumElements);
+        memory_handle = _Allocator.CreateArray<T>(&Data, array.NumElements);
 
         memcpy(Data, array.Data, array.NumElements * ElemSize);
         NumElements   = array.NumElements;

@@ -12,6 +12,9 @@
 #include "../core/Allocators.hpp"
 #include "../core/Containers.hpp"
 
+#include "renderer_structs.hpp"
+#include "vulkan/vulkan_core.h"
+
 struct AE_Window
 {
     i32 width  = -1;
@@ -32,6 +35,8 @@ class AE_Renderer final
         VkQueue graphics_queue = VK_NULL_HANDLE;
         VkQueue compute_queue  = VK_NULL_HANDLE;
         VkQueue transfer_queue = VK_NULL_HANDLE;
+
+        SwapChain swapchain;
     };
 
   public:
@@ -292,6 +297,34 @@ class AE_Renderer final
 
             vkGetDeviceQueue(renderObjects.device, transfer_q_idx, 0,
                              &renderObjects.transfer_queue);
+        }
+
+        // Get Swap chain details
+        vkGetPhysicalDeviceSurfaceFormatsKHR(
+            renderObjects.physical_device, renderObjects.surface,
+            &renderObjects.swapchain.num_formats, nullptr);
+
+        if (renderObjects.swapchain.num_formats > 0u)
+        {
+            assert(renderObjects.swapchain.num_formats <=
+                   renderObjects.swapchain.formats.Size());
+            vkGetPhysicalDeviceSurfaceFormatsKHR(
+                renderObjects.physical_device, renderObjects.surface,
+                &renderObjects.swapchain.num_formats,
+                renderObjects.swapchain.formats.Data);
+        }
+
+        vkGetPhysicalDeviceSurfacePresentModesKHR(
+            renderObjects.physical_device, renderObjects.surface,
+            &renderObjects.swapchain.num_modes, nullptr);
+        if (renderObjects.swapchain.num_modes > 0u)
+        {
+            assert(renderObjects.swapchain.num_modes <=
+                   renderObjects.swapchain.present_modes.Size());
+            vkGetPhysicalDeviceSurfacePresentModesKHR(
+                renderObjects.physical_device, renderObjects.surface,
+                &renderObjects.swapchain.num_modes,
+                renderObjects.swapchain.present_modes.Data);
         }
 
         while (!glfwWindowShouldClose(window))

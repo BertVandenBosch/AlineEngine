@@ -116,38 +116,36 @@ class IAllocator
 
     template <typename T, size_t _Alignment = alignof(T), class... Args>
         requires std::is_constructible_v<T, Args...>
-    [[nodiscard]] constexpr MemoryHandle CreateArray(T* out_obj, const u32 N,
+    [[nodiscard]] constexpr MemoryHandle CreateArray(T** out_obj, const u32 N,
                                                      Args&&... args)
     {
-        out_obj             = nullptr;
+        *out_obj            = nullptr;
         MemoryHandle handle = Allocate(sizeof(T) * N, {true, _Alignment});
+        assert(handle.is_valid());
 
-        if (handle.is_valid())
+        if constexpr (std::is_default_constructible_v<T>)
         {
-            if constexpr (std::is_default_constructible_v<T>)
-            {
-                // Construct N elements in place at the AllocAddress
-                // address
-                void* address = HandleToPtr(handle);
-                ::new (address) T[N];
-                *out_obj = static_cast<remove_all_pointers_t<T>*>(address);
-            }
-            else
-            {
-                // memory footprint of a single element in the array
-                constexpr size_t element_size =
-                    MemoryUtils::align_forward(sizeof(T), _Alignment);
+            // Construct N elements in place at the AllocAddress
+            // address
+            void* address = HandleToPtr(handle);
+            ::new (address) T[N];
+            *out_obj = static_cast<T*>(address);
+        }
+        else
+        {
+            // memory footprint of a single element in the array
+            constexpr uintptr_t element_size =
+                MemoryUtils::align_forward(sizeof(T), _Alignment);
 
-                // Individually call the constructor for each element in the
-                // array
-                uintptr_t address = (uintptr_t)HandleToPtr(handle);
-                for (u32 i = 0; i < N; i++)
-                {
-                    ::new (address) T(std::forward(args)...);
-                    address += element_size;
-                }
-                *out_obj = static_cast<remove_all_pointers_t<T>*>(HandleToPtr(handle));
+            // Individually call the constructor for each element in the
+            // array
+            uintptr_t address = (uintptr_t)HandleToPtr(handle);
+            for (u32 i = 0; i < N; i++)
+            {
+                ::new (address) T(std::forward(args)...);
+                address += element_size;
             }
+            *out_obj = static_cast<T*>(address);
         }
 
         return handle;
