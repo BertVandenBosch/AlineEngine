@@ -13,7 +13,7 @@ echo Vulkan SDK: %VULKAN_SDK%
 echo Vulkan Include: %VULKAN_INC%
 
 :: Configuration - Customize these paths as needed
-set INCLUDE_DIRS=./src %VULKAN_INC% ..\third-party\glfw3.4\include
+set INCLUDE_DIRS=./src %VULKAN_INC% .\third-party\glfw3.4\include
 set SRC_DIRS=./src ./src/core
 
 :: Check if build type argument is provided
@@ -80,11 +80,10 @@ if errorlevel 1 (
 
 :: Create build folder
 if not exist build mkdir build
-pushd build
 
 ::/Fe:%OUTPUT_NAME%
 :: Compile all .cpp files
-clang++ %C_FLAGS% %COMPILER_FLAGS% %INCLUDE_FLAGS%  ..\src\main.cpp ..\src\graphics\renderer.cpp -L"C:\Users\bert\Desktop\AlineEngine\third-party\glfw3.4\lib-vc2022" -lglfw3dll -lgdi32  -l %VULKAN_SDK%\Lib\vulkan-1.lib -o %OUTPUT_NAME%
+clang++ %C_FLAGS% %COMPILER_FLAGS% %INCLUDE_FLAGS%  .\src\main.cpp .\src\graphics\renderer.cpp -L"C:\Users\bert\Desktop\AlineEngine\third-party\glfw3.4\lib-vc2022" -lglfw3dll -lgdi32  -l %VULKAN_SDK%\Lib\vulkan-1.lib -o ./build/%OUTPUT_NAME%
 
 if errorlevel 1 (
     echo.
@@ -110,9 +109,6 @@ if /i %BUILD_DB%==true (
 
     echo Created compile_commands.json
 )
-
-:: out of build dir
-popd
 
 :: auto run
 if	defined AUTO_RUN (
