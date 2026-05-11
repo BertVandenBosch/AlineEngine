@@ -12,6 +12,7 @@ int main()
 {
 
     AE_Renderer renderer;
+    renderer.init_renderer();
 
     BitList<16> freelist;
 

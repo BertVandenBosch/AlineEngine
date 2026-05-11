@@ -43,7 +43,7 @@ class BindlessHeapManager final
     Pool<struct Texture, BindlessHandle> texture_heap;
 
   private:
-    ArenaAllocator allocator = ArenaAllocator(MB(256));
+    ArenaAllocator<> allocator = ArenaAllocator(MB(256));
 
     // vulkan objects
     VkDevice& device;
