@@ -121,21 +121,24 @@ class Array final
     Array(IAllocator& allocator, std::initializer_list<T> initList)
         : _Allocator(allocator)
     {
-        Resize(initList.size());
+        const u32 alloc_size = round_up_pow2(initList.size());
 
-        memory_handle = _Allocator.CreateArray<T>(&Data, initList.size());
-        _NumAllocated = initList.size();
-
+        memory_handle = _Allocator.CreateArray<T>(&Data, alloc_size);
         memcpy(Data, initList.begin(), initList.size() * ElemSize);
+
+        _NumAllocated = alloc_size;
+        NumElements = initList.size();
     }
 
     Array(const Array<T>& array) : _Allocator(array._Allocator)
     {
-        memory_handle = _Allocator.CreateArray<T>(&Data, array.NumElements);
+    	const u32 alloc_size = round_up_pow2(array.NumElements);
 
+        memory_handle = _Allocator.CreateArray<T>(&Data, alloc_size);
         memcpy(Data, array.Data, array.NumElements * ElemSize);
+
         NumElements   = array.NumElements;
-        _NumAllocated = array.NumElements;
+        _NumAllocated = alloc_size;
     }
 
     ~Array() { _Allocator.Free(memory_handle); }
@@ -170,6 +173,13 @@ class Array final
         }
     }
 
+    void add_no_init(u32 amount)
+    {
+    	const u32 requested_size = NumElements + amount;
+    	Reserve(requested_size);
+    	NumElements = requested_size;
+    }
+
     u32 Add(const T& elem)
     {
         if (NumElements >= _NumAllocated - 1)
@@ -201,14 +211,20 @@ class Array final
         assert(index < _NumAllocated);
 
         ::new (Data[index]) T(std::forward(args)...);
-        NumElements++;
     }
 
     void RemoveSlack()
     {
         if (_NumAllocated > NumElements)
         {
-            Resize(NumElements);
+            // Move the allocation to a perfect fit size
+            MemoryHandle new_handle = _Allocator.CreateArray<T>(&Data, NumElements);
+            memcpy(_Allocator.HandleToPtr(new_handle), _Allocator.HandleToPtr(memory_handle), NumElements * ElemSize);
+
+            _Allocator.Free(memory_handle);
+
+            memory_handle = new_handle;
+            _NumAllocated = NumElements;
         }
     }
 
