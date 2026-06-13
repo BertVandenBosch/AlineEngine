@@ -31,7 +31,7 @@ if	"%~2"=="--autorun" (
 	set AUTO_RUN=true
 )
 
-set C_FLAGS=-std=c++20
+set C_FLAGS=-std=c++26
 set BUILD_DB=false
 if "%~2"=="intellisense" (
     set C_FLAGS=!C_FLAGS! -MJ main.json
