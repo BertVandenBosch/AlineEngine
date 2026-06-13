@@ -36,7 +36,7 @@ class AE_Renderer final
         VkQueue compute_queue  = VK_NULL_HANDLE;
         VkQueue transfer_queue = VK_NULL_HANDLE;
 
-        SwapChain swapchain;
+        TSwapChain swapchain;
     };
 
   public:
@@ -304,28 +304,35 @@ class AE_Renderer final
             renderObjects.physical_device, renderObjects.surface,
             &renderObjects.swapchain.num_formats, nullptr);
 
+        TSwapChain& swapchain = renderObjects.swapchain;
+
         if (renderObjects.swapchain.num_formats > 0u)
         {
-            assert(renderObjects.swapchain.num_formats <=
-                   renderObjects.swapchain.formats.Size());
+            assert(swapchain.num_formats <=
+            swapchain.formats.Size());
             vkGetPhysicalDeviceSurfaceFormatsKHR(
                 renderObjects.physical_device, renderObjects.surface,
-                &renderObjects.swapchain.num_formats,
-                renderObjects.swapchain.formats.Data);
+                &swapchain.num_formats,
+                swapchain.formats.Data);
         }
 
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-            renderObjects.physical_device, renderObjects.surface,
-            &renderObjects.swapchain.num_modes, nullptr);
-        if (renderObjects.swapchain.num_modes > 0u)
+            renderObjects.physical_device,
+            renderObjects.surface,
+            &swapchain.num_modes,
+            nullptr);
+        if (swapchain.num_modes > 0u)
         {
-            assert(renderObjects.swapchain.num_modes <=
-                   renderObjects.swapchain.present_modes.Size());
+            assert(swapchain.num_modes <=
+            swapchain.present_modes.Size());
             vkGetPhysicalDeviceSurfacePresentModesKHR(
-                renderObjects.physical_device, renderObjects.surface,
-                &renderObjects.swapchain.num_modes,
-                renderObjects.swapchain.present_modes.Data);
+                renderObjects.physical_device,
+                renderObjects.surface,
+                &swapchain.num_modes,
+                swapchain.present_modes.Data);
         }
+
+
 
         while (!glfwWindowShouldClose(window))
         {
