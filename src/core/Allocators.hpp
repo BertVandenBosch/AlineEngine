@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "core.hpp"
-#include "utils/types.hpp"
 
 namespace MemoryUtils
 {
@@ -168,8 +167,8 @@ class ArenaAllocator final : public IAllocatorTempl<true>
     size_t buffer_offset = 0;
 
   public:
-    constexpr ArenaAllocator() = default;
-    explicit ArenaAllocator(size_t Size)
+    [[nodiscard]] constexpr ArenaAllocator() = default;
+    [[nodiscard]] explicit ArenaAllocator(size_t Size)
     {
         buffer_len    = 0;
         buffer_offset = 0;
