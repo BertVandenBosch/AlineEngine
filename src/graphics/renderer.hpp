@@ -306,10 +306,11 @@ class AE_Renderer final
 
         TSwapChain& swapchain = renderObjects.swapchain;
 
+        swapchain.formats.add_no_init(swapchain.num_formats);
+
         if (renderObjects.swapchain.num_formats > 0u)
         {
-            assert(swapchain.num_formats <=
-            swapchain.formats.Size());
+            assert(swapchain.num_formats <= swapchain.formats.Size());
             vkGetPhysicalDeviceSurfaceFormatsKHR(
                 renderObjects.physical_device, renderObjects.surface,
                 &swapchain.num_formats,
@@ -321,6 +322,9 @@ class AE_Renderer final
             renderObjects.surface,
             &swapchain.num_modes,
             nullptr);
+
+        swapchain.present_modes.add_no_init(swapchain.num_modes);
+
         if (swapchain.num_modes > 0u)
         {
             assert(swapchain.num_modes <=
