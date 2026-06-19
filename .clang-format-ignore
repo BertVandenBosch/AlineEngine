@@ -1,0 +1,2 @@
+# clang-format is for C/C++ only. Don't let it touch Lua build scripts.
+*.lua
