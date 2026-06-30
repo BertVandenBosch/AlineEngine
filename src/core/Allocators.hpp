@@ -16,6 +16,8 @@ namespace MemoryUtils
 
 static constexpr u32 DEFAULT_ALIGNMENT = 2 * sizeof(void*);
 
+
+
 constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 {
     uintptr_t p, a, modulo;
@@ -84,7 +86,7 @@ class IAllocator
 
     template <typename T>
     [[nodiscard]] constexpr MemoryHandle
-    Allocate(T* out_obj, u32 Alignment = MemoryUtils::DEFAULT_ALIGNMENT)
+    Allocate(T*& out_obj, u32 Alignment = MemoryUtils::DEFAULT_ALIGNMENT)
     {
         MemoryHandle handle = Allocate(sizeof(T), {true, Alignment});
 
@@ -115,10 +117,10 @@ class IAllocator
 
     template <typename T, size_t _Alignment = alignof(T), class... Args>
         requires std::is_constructible_v<T, Args...>
-    [[nodiscard]] constexpr MemoryHandle CreateArray(T** out_obj, const u32 N,
+    [[nodiscard]] constexpr MemoryHandle CreateArray(T*& out_obj, const u32 N,
                                                      Args&&... args)
     {
-        *out_obj            = nullptr;
+        out_obj            = nullptr;
         MemoryHandle handle = Allocate(sizeof(T) * N, {true, _Alignment});
         assert(handle.is_valid());
 
@@ -128,23 +130,26 @@ class IAllocator
             // address
             void* address = HandleToPtr(handle);
             ::new (address) T[N];
-            *out_obj = static_cast<T*>(address);
+            out_obj = static_cast<T*>(address);
         }
         else
         {
             // memory footprint of a single element in the array
             constexpr uintptr_t element_size =
                 MemoryUtils::align_forward(sizeof(T), _Alignment);
+            assert(element_size * N <= handle.size);
 
             // Individually call the constructor for each element in the
             // array
-            uintptr_t address = (uintptr_t)HandleToPtr(handle);
+            T* base_address = static_cast<T*>(HandleToPtr(handle));
+            uintptr_t address = reinterpret_cast<uintptr_t>(base_address);
             for (u32 i = 0; i < N; i++)
             {
-                ::new (address) T(std::forward(args)...);
-                address += element_size;
+                ::new (reinterpret_cast<void*>(address)) T(args...);
+                // address += element_size;
+                address += sizeof(T); //TODO(Bert): verify above assert is met.
             }
-            *out_obj = static_cast<T*>(address);
+            out_obj = base_address;
         }
 
         return handle;
@@ -157,6 +162,9 @@ class IAllocatorTempl : public IAllocator
   public:
     constexpr bool is_linear() const override { return Linear; }
 };
+
+template<typename TAlloc>
+concept contiguous_container = std::is_base_of_v<IAllocatorTempl<true>, TAlloc>;
 
 template <size_t _Alignment = MemoryUtils::DEFAULT_ALIGNMENT>
 class ArenaAllocator final : public IAllocatorTempl<true>
@@ -178,9 +186,9 @@ class ArenaAllocator final : public IAllocatorTempl<true>
             Init(Size);
         }
     }
-    ~ArenaAllocator() { delete[] buffer; }
+    ~ArenaAllocator() { free(buffer);  }
 
-    void GetRawData(void* out_data, u32* out_size) override
+    void GetRawData(void*& out_data, u32* out_size) override
     {
         assert(out_data != nullptr);
         out_data  = buffer;
@@ -216,7 +224,7 @@ class ArenaAllocator final : public IAllocatorTempl<true>
         if (offset + Size <= buffer_len)
         {
             // increment buffer offset counter
-            buffer_offset += offset + Size;
+            buffer_offset = offset + Size;
 
             memset(&buffer[offset], 0, Size);
 
@@ -257,18 +265,14 @@ class ArenaAllocator final : public IAllocatorTempl<true>
 //     /* IAllocator interface end */
 // };
 
-template <class AllocatorA, class AllocatorB>
-    requires std::is_base_of_v<IAllocatorTempl<true>, AllocatorA> &&
-             std::is_base_of_v<IAllocatorTempl<true>, AllocatorB>
+template <contiguous_container AllocatorA, contiguous_container AllocatorB>
 inline void CopyFrom(const AllocatorA* src, AllocatorB* dst)
 {
     assert(src->buffer_offset <= dst->buffer_len);
     std::memcpy(dst->buffer, src->buffer, src->buffer_offset);
 }
 
-template <class AllocatorA, class AllocatorB>
-    requires std::is_base_of_v<IAllocatorTempl<true>, AllocatorA> &&
-             std::is_base_of_v<IAllocatorTempl<true>, AllocatorB>
+template <contiguous_container AllocatorA, contiguous_container AllocatorB>
 inline void MoveFrom(AllocatorA* src, AllocatorB* dst)
 {
     assert(src->buffer_offset <= dst->buffer_len);
