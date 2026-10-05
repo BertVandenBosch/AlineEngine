@@ -1,0 +1,3 @@
+[submodule "src/NoGraphicsAPI"]
+	path = src/NoGraphicsAPI
+	url = https://github.com/BertVandenBosch/NoGraphicsAPI.git
