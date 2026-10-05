@@ -32,7 +32,7 @@ struct BitList final
     explicit BitList(std::initializer_list<WordType> il)
     {
         const u32 usable_size =
-            __min((u32)il.size(), NumWords) * sizeof(NumWords);
+            std::min((u32)il.size(), NumWords) * sizeof(WordType);
         memcpy(&data, il.begin(), usable_size);
     }
 
@@ -43,7 +43,7 @@ struct BitList final
         u32 word_index, bit_index;
         get_indices(index, word_index, bit_index);
 
-        u32 mask = 1 << bit_index;
+        const WordType mask = WordType(1) << bit_index;
 
         data[word_index] |= mask;
     }
@@ -55,7 +55,7 @@ struct BitList final
         u32 word_index, bit_index;
         get_indices(index, word_index, bit_index);
 
-        WordType mask = ~(1 << bit_index);
+        const WordType mask = ~(WordType(1) << bit_index);
 
         data[word_index] &= mask;
     }
@@ -88,7 +88,11 @@ struct BitList final
             }
             if (set_index >= 0)
             {
-                return set_index + bit_start_offset + (word_i * BitsPerWord);
+                const i32 result =
+                    set_index + bit_start_offset + (word_i * BitsPerWord);
+                // Bits past N in the last word are padding; a `false` search
+                // reads them as free -- reject.
+                return result < (i32)N ? result : -1;
             }
         }
 
@@ -113,14 +117,14 @@ struct BitList final
         u32 word_index, bit_index;
         get_indices(index, word_index, bit_index);
 
-        WordType mask = 1 << bit_index;
+        const WordType mask = WordType(1) << bit_index;
 
         return (data[word_index] & mask);
     }
 
     inline bool operator==(const BitList<N, WordType>& other) const
     {
-        return memcmp(&data, &other.data, N * sizeof(WordType));
+        return memcmp(&data, &other.data, sizeof(data)) == 0;
     }
 };
 
@@ -134,7 +138,7 @@ struct DynamicBitlist
         : chunks(allocator, num_chunks),
           total_capacity(num_chunks * BitsPerChunk)
     {
-        chunks.NumElements = chunks._NumAllocated;
+        chunks.Resize(num_chunks);
     }
 
     Array<BitList<ChunkSize>> chunks;
@@ -146,7 +150,7 @@ struct DynamicBitlist
         assert(index < total_capacity);
 
         const u32 chunk_idx    = index_to_chunk_index(index);
-        const u32 in_chunk_idx = index - chunk_idx;
+        const u32 in_chunk_idx = index - chunk_idx * BitsPerChunk;
 
         assert(chunk_idx < num_chunks());
 
@@ -158,7 +162,7 @@ struct DynamicBitlist
         assert(index < total_capacity);
 
         const u32 chunk_idx    = index_to_chunk_index(index);
-        const u32 in_chunk_idx = index - chunk_idx;
+        const u32 in_chunk_idx = index - chunk_idx * BitsPerChunk;
 
         assert(chunk_idx < num_chunks());
 
@@ -172,7 +176,9 @@ struct DynamicBitlist
             return;
         }
 
-        const u32 new_num_chunks = round_up_pow2(new_capacity / BitsPerChunk);
+        const u32 needed_chunks =
+            (new_capacity + BitsPerChunk - 1u) / BitsPerChunk;
+        const u32 new_num_chunks = round_up_pow2(needed_chunks);
         chunks.Resize(new_num_chunks);
 
         total_capacity = BitsPerChunk * new_num_chunks;
@@ -183,22 +189,37 @@ struct DynamicBitlist
         return round_down(index, BitsPerChunk) / BitsPerChunk;
     }
 
+    inline bool operator[](u32 index) const
+    {
+        assert(index < total_capacity);
+
+        const u32 chunk_idx = index_to_chunk_index(index);
+        return chunks[chunk_idx][index - chunk_idx * BitsPerChunk];
+    }
+
     /*
-     * Find first flag starting from the given index. start_index excluded.
+     * Find first flag starting from the given index (inclusive).
      */
     i32 find_first(bool flag, u32 start_index = 0u) const
     {
-        for (u32 i = 0; i < chunks.NumElements; i++)
+        const u32 chunk_start = index_to_chunk_index(start_index);
+
+        for (u32 i = chunk_start; i < chunks.NumElements; i++)
         {
-            i32 first_in_chunk = chunks[i].find_first(flag);
+            const u32 in_chunk_start =
+                i == chunk_start ? start_index - chunk_start * BitsPerChunk : 0u;
+
+            const i32 first_in_chunk = chunks[i].find_first(flag, in_chunk_start);
             if (first_in_chunk >= 0)
             {
-                return first_in_chunk + i;
+                return first_in_chunk + i * BitsPerChunk;
             }
         }
+
+        return -1;
     }
 
-    inline const u32 size_bits() const { num_chunks() * ChunkSize; }
+    inline u32 size_bits() const { return num_chunks() * BitsPerChunk; }
 
     inline const u32 num_chunks() const { return chunks.NumElements; }
 };

@@ -70,7 +70,7 @@ constexpr SizeType round_down(SizeType value, SizeType roundTo)
 
 constexpr inline u32 round_up_pow2(u32 value)
 {
-    return value == 1u ? 1u : (1u << (32 - __builtin_clz(value - 1u)));
+    return value <= 1u ? 1u : (1u << (32 - __builtin_clz(value - 1u)));
 }
 
 constexpr inline u32 round_down_pow2(u32 value)
@@ -80,10 +80,10 @@ constexpr inline u32 round_down_pow2(u32 value)
 
 constexpr inline u64 round_up_pow2(u64 value)
 {
-    return value == 1u ? 1u : (1u << (64 - __builtin_clzll(value - 1u)));
+    return value <= 1u ? 1u : (1ull << (64 - __builtin_clzll(value - 1u)));
 }
 
 constexpr inline u64 round_down_pow2(u64 value)
 {
-    return value == 1u ? 0u : (1u << (64 - __builtin_clzll(value) - 1u));
+    return value == 1u ? 0u : (1ull << (64 - __builtin_clzll(value) - 1u));
 }

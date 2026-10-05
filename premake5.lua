@@ -12,8 +12,7 @@
 -- Other generators work too, e.g. `premake5 vs2022` for a Visual Studio
 -- solution.
 --
--- The clang++ toolchain, C++26 and the original include/library layout from
--- build.bat are all preserved below. To add a source folder, a dependency or a
+-- To add a source folder, a dependency or a
 -- new configuration, edit the clearly marked tables -- nothing else should need
 -- to change.
 --
@@ -49,17 +48,11 @@ if premake.modules.ninja then
 	premake.override(cpp, "cxxrule", inject_depfile)
 end
 
--- ---------------------------------------------------------------------------
--- Dependencies
--- ---------------------------------------------------------------------------
-
-local vulkan_sdk = os.getenv("VULKAN_SDK")
-if not vulkan_sdk then
-	error("VULKAN_SDK environment variable is not set -- install the Vulkan SDK")
+-- Static libraries are archived with `ar`, which is not installed here --
+-- LLVM's drop-in replacement is.
+if premake.tools.clang and premake.tools.clang.tools then
+	premake.tools.clang.tools.ar = "llvm-ar"
 end
-print("Vulkan SDK: " .. vulkan_sdk)
-
-local glfw = "third-party/glfw3.4"
 
 -- ---------------------------------------------------------------------------
 -- Workspace
@@ -92,19 +85,6 @@ do
 	-- Header search paths -----------------------------------------------
 	includedirs {
 		"src",
-		vulkan_sdk .. "/Include",
-		glfw .. "/include",
-	}
-
-	-- Libraries ---------------------------------------------------------
-	libdirs {
-		glfw .. "/lib-vc2022",
-		vulkan_sdk .. "/Lib",
-	}
-	links {
-		"glfw3dll",
-		"gdi32",
-		"vulkan-1",
 	}
 
 	-- C++26 is requested explicitly so the exact clang flag is used

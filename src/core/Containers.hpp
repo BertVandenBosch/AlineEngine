@@ -9,17 +9,32 @@
 #include <initializer_list>
 #include <type_traits>
 
+/*
+ * Non-owning span over contiguous elements. Kept an aggregate so
+ * designated-initializer construction keeps working.
+ *
+ * The lowercase size()/data()/empty() accessors mirror std::span's surface so
+ * span-shaped code can consume Views without a
+ * rename pass.
+ */
 template <typename T>
 struct View
 {
-    T*        Data;
-    const u32 NumElements;
+    T*  Data        = nullptr;
+    u32 NumElements = 0;
 
-    inline T* begin() { return &Data[0]; }
-    inline T* end() { return &Data[NumElements - 1]; }
+    inline T* begin() { return Data; }
+    inline T* end() { return Data + NumElements; }
 
-    inline const T* begin() const { return &Data[0]; }
-    inline const T* end() const { return &Data[NumElements - 1]; }
+    inline const T* begin() const { return Data; }
+    inline const T* end() const { return Data + NumElements; }
+
+    inline const T* cbegin() const { return Data; }
+    inline const T* cend() const { return Data + NumElements; }
+
+    inline constexpr u32  size() const { return NumElements; }
+    inline constexpr T*   data() const { return Data; }
+    inline constexpr bool empty() const { return NumElements == 0u; }
 
     inline const T& operator[](const u32 _idx) const
     {
@@ -54,7 +69,7 @@ class StaticArray final
     }
     explicit StaticArray(std::initializer_list<T> elems)
     {
-        assert(elems.size() < N);
+        assert(elems.size() <= N);
         memcpy(Data, elems.begin(), elems.size() * ElemSize);
     }
 
@@ -89,14 +104,29 @@ class StaticArray final
         memcpy(Data, view.Data, Size * ElemSize);
     }
 
+    // ---------------- Ranged for iteration interface ----------------
+    T*       begin() { return &Data[0]; }
+    T*       end() { return &Data[N]; }
+    const T* begin() const { return &Data[0]; }
+    const T* end() const { return &Data[N]; }
+
     // ---------------- Implicit casts to views ----------------
-    operator View<T>() const { return CreateConstView(*this); }
+    operator View<const T>() const { return CreateView(*this); }
     operator View<T>() { return CreateView(*this); }
 };
 
+/*
+ * Dynamic array. Always constructed against an explicit allocator; growth is
+ * memcpy-based, so element types must be trivially copyable (enforced below).
+ * On a linear allocator (arena) every regrowth abandons the old block --
+ * reserve realistically up front.
+ */
 template <typename T>
 class Array final
 {
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "Array grows with memcpy -- T must be trivially copyable");
+
   public:
     static constexpr u32 ElemSize = sizeof(T);
 
@@ -113,78 +143,104 @@ class Array final
     {
         if (reservedNum > 0)
         {
-            memory_handle = _Allocator.CreateArray<T>(&Data, reservedNum);
-            _NumAllocated = round_up_pow2(reservedNum);
+            GrowCapacity(reservedNum);
         }
     }
 
     Array(IAllocator& allocator, std::initializer_list<T> initList)
         : _Allocator(allocator)
     {
-        const u32 alloc_size = round_up_pow2(initList.size());
-
-        memory_handle = _Allocator.CreateArray<T>(&Data, alloc_size);
-        memcpy(Data, initList.begin(), initList.size() * ElemSize);
-
-        _NumAllocated = alloc_size;
-        NumElements = initList.size();
+        const u32 num = static_cast<u32>(initList.size());
+        if (num > 0)
+        {
+            GrowCapacity(num);
+            memcpy(Data, initList.begin(), num * ElemSize);
+            NumElements = num;
+        }
     }
 
     Array(const Array<T>& array) : _Allocator(array._Allocator)
     {
-    	const u32 alloc_size = round_up_pow2(array.NumElements);
-
-        memory_handle = _Allocator.CreateArray<T>(&Data, alloc_size);
-        memcpy(Data, array.Data, array.NumElements * ElemSize);
-
-        NumElements   = array.NumElements;
-        _NumAllocated = alloc_size;
+        if (array.NumElements > 0)
+        {
+            GrowCapacity(array.NumElements);
+            memcpy(Data, array.Data, array.NumElements * ElemSize);
+            NumElements = array.NumElements;
+        }
     }
 
     ~Array() { _Allocator.Free(memory_handle); }
 
     u32 Size() const { return NumElements; }
 
-    void Resize(u32 newSize)
-    {
-        const u32 new_size_pow2 = round_up_pow2(newSize);
+    // lowercase shims mirroring std::vector's read surface (see View)
+    u32      size() const { return NumElements; }
+    T*       data() { return Data; }
+    const T* data() const { return Data; }
+    bool     empty() const { return NumElements == 0u; }
+    T&       front() { assert(NumElements > 0); return Data[0]; }
+    const T& front() const { assert(NumElements > 0); return Data[0]; }
+    T&       back() { assert(NumElements > 0); return Data[NumElements - 1]; }
+    const T& back() const { assert(NumElements > 0); return Data[NumElements - 1]; }
 
-        T*           temp = nullptr;
-        MemoryHandle new_memory =
-            _Allocator.CreateArray<T>(&temp, new_size_pow2);
+    /*
+     * Ensure room for at least minCapacity elements (rounded up to a power of
+     * two). Does not touch NumElements.
+     */
+    void GrowCapacity(u32 minCapacity)
+    {
+        const u32 new_capacity = round_up_pow2(minCapacity);
+        if (new_capacity <= _NumAllocated)
+        {
+            return;
+        }
+
+        T*           temp       = nullptr;
+        MemoryHandle new_memory = _Allocator.CreateArray<T>(temp, new_capacity);
         assert(new_memory.is_valid());
 
-        // copy over old data to new        // allocator?
-        memcpy(temp, Data, NumElements * ElemSize);
-        _Allocator.Free(memory_handle);
+        if (Data)
+        {
+            memcpy(temp, Data, NumElements * ElemSize);
+            _Allocator.Free(memory_handle);
+        }
 
         Data          = temp;
         memory_handle = new_memory;
-        _NumAllocated = new_size_pow2;
+        _NumAllocated = new_capacity;
     }
 
     void Reserve(u32 newAmount)
     {
-        assert(newAmount != 0u);
-
         if (newAmount > _NumAllocated)
         {
-            Resize(newAmount);
+            GrowCapacity(newAmount);
         }
+    }
+
+    /*
+     * Set the element count, growing capacity when needed. New elements are
+     * zero-initialized (allocators zero their blocks; shrinking then regrowing
+     * within existing capacity keeps old bytes -- don't rely on those).
+     */
+    void Resize(u32 newSize)
+    {
+        Reserve(newSize);
+        NumElements = newSize;
     }
 
     void add_no_init(u32 amount)
     {
-    	const u32 requested_size = NumElements + amount;
-    	Reserve(requested_size);
-    	NumElements = requested_size;
+        const u32 requested_size = NumElements + amount;
+        Reserve(requested_size);
+        NumElements = requested_size;
     }
 
     u32 Add(const T& elem)
     {
-        if (NumElements >= _NumAllocated - 1)
+        if (NumElements >= _NumAllocated)
         {
-            Reserve(2 * _NumAllocated);
+            GrowCapacity(_NumAllocated > 0 ? 2 * _NumAllocated : 4u);
         }
 
         Data[NumElements++] = elem;
@@ -195,12 +251,12 @@ class Array final
     template <class... Args>
     u32 Emplace(Args&&... args)
     {
-        if (NumElements >= _NumAllocated - 1)
+        if (NumElements >= _NumAllocated)
         {
-            Reserve(2 * _NumAllocated);
+            GrowCapacity(_NumAllocated > 0 ? 2 * _NumAllocated : 4u);
         }
 
-        ::new (Data[NumElements++]) T(std::forward(args)...);
+        ::new (static_cast<void*>(&Data[NumElements++])) T(std::forward<Args>(args)...);
 
         return NumElements;
     }
@@ -210,15 +266,61 @@ class Array final
     {
         assert(index < _NumAllocated);
 
-        ::new (Data[index]) T(std::forward(args)...);
+        ::new (static_cast<void*>(&Data[index])) T(std::forward<Args>(args)...);
+    }
+
+    /*
+     * Insert at index, shifting everything from index onwards one slot right.
+     */
+    void InsertAt(u32 index, const T& elem)
+    {
+        assert(index <= NumElements);
+
+        if (NumElements >= _NumAllocated)
+        {
+            GrowCapacity(_NumAllocated > 0 ? 2 * _NumAllocated : 4u);
+        }
+
+        memmove(&Data[index + 1], &Data[index], (NumElements - index) * ElemSize);
+        Data[index] = elem;
+        NumElements++;
+    }
+
+    /*
+     * Remove at index, shifting everything after it one slot left (keeps
+     * order; use swap-with-last manually when order doesn't matter).
+     */
+    void RemoveAt(u32 index)
+    {
+        assert(index < NumElements);
+
+        memmove(&Data[index], &Data[index + 1], (NumElements - index - 1) * ElemSize);
+        NumElements--;
+    }
+
+    void Clear() { NumElements = 0; }
+
+    void PopBack()
+    {
+        assert(NumElements > 0);
+        NumElements--;
     }
 
     void RemoveSlack()
     {
+        if (NumElements == 0)
+        {
+            _Allocator.Free(memory_handle);
+            Data          = nullptr;
+            memory_handle = {};
+            _NumAllocated = 0;
+            return;
+        }
+
         if (_NumAllocated > NumElements)
         {
             // Move the allocation to a perfect fit size
-            MemoryHandle new_handle = _Allocator.CreateArray<T>(&Data, NumElements);
+            MemoryHandle new_handle = _Allocator.CreateArray<T>(Data, NumElements);
             memcpy(_Allocator.HandleToPtr(new_handle), _Allocator.HandleToPtr(memory_handle), NumElements * ElemSize);
 
             _Allocator.Free(memory_handle);
@@ -230,11 +332,7 @@ class Array final
 
     void Append(View<const T> view)
     {
-        const u32 new_size = NumElements + view.NumElements;
-        if (new_size > _NumAllocated)
-        {
-            Resize(new_size);
-        }
+        Reserve(NumElements + view.NumElements);
 
         // copy over new elements
         memcpy(&Data[NumElements], view.Data, ElemSize * view.NumElements);
@@ -245,22 +343,19 @@ class Array final
 
     const T& operator[](const u32 index) const
     {
-        assert(index <= NumElements);
+        assert(index < NumElements);
         return Data[index];
     }
 
     T& operator[](const u32 index)
     {
-        assert(index <= NumElements);
+        assert(index < NumElements);
         return Data[index];
     }
 
     void operator=(View<T> view)
     {
-        if (_NumAllocated < view.NumElements)
-        {
-            Resize(view.NumElements);
-        }
+        Reserve(view.NumElements);
 
         memcpy(Data, view.Data, view.NumElements * ElemSize);
         NumElements = view.NumElements;
@@ -268,43 +363,31 @@ class Array final
 
     void operator=(const Array<T>& array)
     {
-        if (_NumAllocated < array._NumAllocated)
-        {
-            Resize(array._NumAllocated);
-        }
+        Reserve(array.NumElements);
 
-        memcpy(Data, array.Data, array.NumElements * array.ElemSize);
+        memcpy(Data, array.Data, array.NumElements * ElemSize);
         NumElements = array.NumElements;
     }
 
     void operator=(std::initializer_list<T> list)
     {
-        if (_NumAllocated < list.size())
-        {
-            Resize(list.size());
-        }
-        memcpy(Data, list.begin(), list.size() * ElemSize);
-        NumElements = list.size();
-    }
+        const u32 num = static_cast<u32>(list.size());
+        Reserve(num);
 
-    template <u32 NUM_STRINGS>
-        requires(std::is_class_v<char>(std::remove_pointer<T>::type))
-    void operator=(const char strings[NUM_STRINGS])
-    {
-        if (_NumAllocated < NUM_STRINGS)
-        {
-            Resize(NUM_STRINGS);
-        }
-        memcpy(Data, strings, NUM_STRINGS * ElemSize);
+        memcpy(Data, list.begin(), num * ElemSize);
+        NumElements = num;
     }
 
     // ---------------- Ranged for iteration interface ----------------
-    T* begin() { return &Data[0]; }
-
-    T* end() { return &Data[NumElements]; }
+    T*       begin() { return &Data[0]; }
+    T*       end() { return &Data[NumElements]; }
+    const T* begin() const { return &Data[0]; }
+    const T* end() const { return &Data[NumElements]; }
+    const T* cbegin() const { return &Data[0]; }
+    const T* cend() const { return &Data[NumElements]; }
 
     // ---------------- Implicit casts to views ----------------
-    operator View<T>() const { return CreateConstView(*this); }
+    operator View<const T>() const { return CreateConstView(*this); }
     operator View<T>() { return CreateView(*this); }
 };
 
@@ -364,7 +447,7 @@ constexpr inline View<const T> CreateConstView(const Array<T>& array)
 }
 
 template <typename T>
-constexpr inline View<T> CreateView(const T* array, u32 size)
+constexpr inline View<T> CreateView(T* array, u32 size)
 {
     View<T> Result = {
         .Data        = array,
@@ -374,9 +457,9 @@ constexpr inline View<T> CreateView(const T* array, u32 size)
 }
 
 template <typename T>
-constexpr inline View<const T> CreateView(T* array, u32 size)
+constexpr inline View<const T> CreateConstView(const T* array, u32 size)
 {
-    View<T> Result = {
+    View<const T> Result = {
         .Data        = array,
         .NumElements = size,
     };
