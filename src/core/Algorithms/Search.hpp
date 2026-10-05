@@ -8,7 +8,7 @@ namespace AE
 {
 
 template <typename T, class... Args>
-inline constexpr auto Invoke(T&& obj, Args&&... args)
+inline constexpr auto invoke(T&& obj, Args&&... args)
     -> decltype((std::forward(obj))(std::forward(args)...))
 {
     return (std::forward(obj))(std::forward(args)...);
@@ -31,10 +31,10 @@ template <typename ArrayType, typename ElemType, typename ComparatorT>
 [[nodiscard]] inline i32 find_linear(View<const ArrayType>&& container,
                        const ElemType& element, ComparatorT comparator)
 {
-	const i32 num_iters = (i32)container.NumElements;
+	const i32 num_iters = (i32)container.num_elements;
     for (i32 i = 0; i < num_iters; i++)
     {
-        if (comparator(container.Data[i], element))
+        if (comparator(container.data[i], element))
         {
             return i;
         }

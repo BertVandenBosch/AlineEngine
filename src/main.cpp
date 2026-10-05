@@ -18,22 +18,23 @@ static void run_core_tests()
         Array<u32> arr(arena);
         for (u32 i = 0; i < 10u; i++)
         {
-            arr.Add(i); // must grow from capacity 0 without faulting
+            arr.add(i); // must grow from capacity 0 without faulting
         }
-        assert(arr.Size() == 10u && arr[9] == 9u);
+        assert(arr.size() == 10u && arr[9] == 9u);
 
-        arr.InsertAt(0u, 100u);
-        assert(arr.Size() == 11u && arr[0] == 100u && arr[1] == 0u && arr[10] == 9u);
+        arr.insert_at(0u, 100u);
+        assert(arr.size() == 11u && arr[0] == 100u && arr[1] == 0u &&
+               arr[10] == 9u);
 
-        arr.RemoveAt(0u);
-        assert(arr.Size() == 10u && arr[0] == 0u && arr[9] == 9u);
+        arr.remove_at(0u);
+        assert(arr.size() == 10u && arr[0] == 0u && arr[9] == 9u);
 
-        arr.Emplace(77u);
-        assert(arr.Size() == 11u && arr[10] == 77u);
+        arr.emplace(77u);
+        assert(arr.size() == 11u && arr[10] == 77u);
 
-        arr.PopBack();
-        arr.Clear();
-        assert(arr.Size() == 0u);
+        arr.pop_back();
+        arr.clear();
+        assert(arr.size() == 0u);
     }
 
     // ---- View: iteration covers every element ----
@@ -41,7 +42,7 @@ static void run_core_tests()
         Array<u32> arr(arena, {1, 2, 3, 4, 5});
         u32        count = 0;
         u32        sum   = 0;
-        for (const u32 v : CreateView(arr))
+        for (const u32 v : create_view(arr))
         {
             count++;
             sum += v;
@@ -77,36 +78,37 @@ static void run_core_tests()
     {
         typedef PoolHandle<u32, 24u, 8u> TestHandle;
 
-        Pool<u64, TestHandle> pool(arena, 2u);
+        Pool<u64, TestHandle> test_pool(arena, 2u);
 
-        TestHandle a = pool.create(11u);
+        TestHandle a = test_pool.create(11u);
         assert(a.index == 0u && a.valid()); // index 0 is a normal slot
-        assert(pool.get(a) && *pool.get(a) == 11u);
-        assert(pool.numObjects() == 1u);
+        assert(test_pool.get(a) && *test_pool.get(a) == 11u);
+        assert(test_pool.num_objects() == 1u);
 
         TestHandle stale = a;
-        pool.destroy(a);
-        assert(pool.get(stale) == nullptr); // stale handle rejected
-        assert(pool.numObjects() == 0u);
+        test_pool.destroy(a);
+        assert(test_pool.get(stale) == nullptr); // stale handle rejected
+        assert(test_pool.num_objects() == 0u);
 
-        TestHandle b = pool.create(22u);
+        TestHandle b = test_pool.create(22u);
         assert(b.index == 0u && b.gen != stale.gen); // slot reused, gen bumped
-        assert(pool.get(stale) == nullptr && *pool.get(b) == 22u);
+        assert(test_pool.get(stale) == nullptr && *test_pool.get(b) == 22u);
 
-        TestHandle c = pool.create(33u);
-        TestHandle d = pool.create(44u); // forces growth past start_size 2
-        assert(*pool.get(c) == 33u && *pool.get(d) == 44u && *pool.get(b) == 22u);
-        assert(pool.numObjects() == 3u);
+        TestHandle c = test_pool.create(33u);
+        TestHandle d = test_pool.create(44u); // forces growth past start_size 2
+        assert(*test_pool.get(c) == 33u && *test_pool.get(d) == 44u &&
+               *test_pool.get(b) == 22u);
+        assert(test_pool.num_objects() == 3u);
 
         assert(TestHandle{}.empty()); // default handle is never valid
-        assert(pool.get(TestHandle{}) == nullptr);
+        assert(test_pool.get(TestHandle{}) == nullptr);
 
-        pool.clear();
-        assert(pool.numObjects() == 0u && pool.get(b) == nullptr);
+        test_pool.clear();
+        assert(test_pool.num_objects() == 0u && test_pool.get(b) == nullptr);
 
         // 64-bit handle layout must instantiate
         typedef PoolHandle<u64, 32u, 32u> WideHandle;
-        WideHandle w{};
+        WideHandle                        w{};
         w.index = 0xFFFFFFFFu;
         w.gen   = 1u;
         assert(w.index == 0xFFFFFFFFu && w.valid());
@@ -116,23 +118,23 @@ static void run_core_tests()
     {
         LinearBlockAllocator blocks(KB(1));
 
-        MemoryHandle a = blocks.Allocate(100u, {});
-        MemoryHandle b = blocks.Allocate(100u, {});
-        MemoryHandle c = blocks.Allocate(100u, {});
+        MemoryHandle a = blocks.allocate(100u, {});
+        MemoryHandle b = blocks.allocate(100u, {});
+        MemoryHandle c = blocks.allocate(100u, {});
         assert(a.is_valid() && b.is_valid() && c.is_valid());
 
-        blocks.Free(b);
-        MemoryHandle d = blocks.Allocate(100u, {});
+        blocks.free(b);
+        MemoryHandle d = blocks.allocate(100u, {});
         assert(d.is_valid() && d.offset == b.offset); // hole gets reused
 
         // free everything (out of order) -> blocks must coalesce back into
         // one span large enough for a big allocation
-        blocks.Free(a);
-        blocks.Free(d);
-        blocks.Free(c);
-        MemoryHandle big = blocks.Allocate(KB(1) - 64u, {});
+        blocks.free(a);
+        blocks.free(d);
+        blocks.free(c);
+        MemoryHandle big = blocks.allocate(KB(1) - 64u, {});
         assert(big.is_valid());
-        blocks.Free(big);
+        blocks.free(big);
     }
 
     // ---- StringBuilder ----
@@ -189,46 +191,46 @@ int main()
 
     printf("hello world \n");
 
-    ArenaAllocator Arena(KB(2));
+    ArenaAllocator arena(KB(2));
 
     struct Peer
     {
         Peer() = default;
-        Peer(u32 val) : Data(val) {};
+        Peer(u32 val) : data(val) {};
 
-        u32 Flags = 0;
-        u32 Data  = 69;
+        u32 flags = 0;
+        u32 data  = 69;
     };
 
-    // size_t peerSize = sizeof(Peer);
+    // size_t peer_size = sizeof(Peer);
 
-    Arena.FreeAll();
+    arena.free_all();
 
     // Array allocated on the stack of the scope
-    StaticArray<Peer, 16> Peren;
+    StaticArray<Peer, 16> peren;
 
-    StaticArray<Peer, 16>* AllocatedPeren = nullptr;
-    MemoryHandle peren_memory = Arena.Create(&AllocatedPeren);
+    StaticArray<Peer, 16>* allocated_peren = nullptr;
+    MemoryHandle           peren_memory    = arena.create(&allocated_peren);
 
-    printf("gewone peer: %u \n", Peren[4].Data);
-    printf("gewone peer: %u \n", AllocatedPeren->Data[4].Data);
+    printf("gewone peer: %u \n", peren[4].data);
+    printf("gewone peer: %u \n", allocated_peren->data[4].data);
 
-    Arena.Free(peren_memory);
+    arena.free(peren_memory);
 
-    StaticArray<u32, 8> Numbers({1, 2, 3, 4, 5});
+    StaticArray<u32, 8> numbers({1, 2, 3, 4, 5});
 
-    // for (uint32 i = 0; i < Numbers.Size(); i++) {
-    //     printf("%u, ", Numbers[i]);
+    // for (uint32 i = 0; i < numbers.size(); i++) {
+    //     printf("%u, ", numbers[i]);
     // }
 
-    Array<u32> DynPeren = Array<u32>(Arena, {1, 2, 3, 4, 5, 6});
+    Array<u32> dyn_peren = Array<u32>(arena, {1, 2, 3, 4, 5, 6});
 
-    Array<Peer> MorePeren(Arena);
-    MorePeren = CreateView(Peren);
+    Array<Peer> more_peren(arena);
+    more_peren = create_view(peren);
 
-    for (const Peer& p : MorePeren)
+    for (const Peer& p : more_peren)
     {
-        printf("%u, %u \n", p.Data, p.Flags);
+        printf("%u, %u \n", p.data, p.flags);
     }
 
     int* getallen = new int[8];

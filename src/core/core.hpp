@@ -55,17 +55,17 @@ template <u32 N>
 concept is_power_of_two_v = is_power_of_two(N);
 
 template <typename SizeType>
-constexpr SizeType round_to(SizeType value, SizeType roundTo)
+constexpr SizeType round_to(SizeType value, SizeType alignment)
 {
-    assert(is_power_of_two(roundTo)); // to make the &~ op work
-    return (value + (roundTo - 1)) & ~(roundTo - 1);
+    assert(is_power_of_two(alignment)); // to make the &~ op work
+    return (value + (alignment - 1)) & ~(alignment - 1);
 }
 
 template <typename SizeType>
-constexpr SizeType round_down(SizeType value, SizeType roundTo)
+constexpr SizeType round_down(SizeType value, SizeType alignment)
 {
-    assert(is_power_of_two(roundTo)); // to make the &~ op work
-    return value & ~(roundTo - 1);
+    assert(is_power_of_two(alignment)); // to make the &~ op work
+    return value & ~(alignment - 1);
 }
 
 constexpr inline u32 round_up_pow2(u32 value)

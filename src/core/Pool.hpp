@@ -17,8 +17,7 @@
  * overload resolution for free (e.g. one handle type per GPU resource kind).
  */
 template <typename HandleT, u32 INDEX_BITS,
-          u32 GEN_BITS = sizeof(HandleT) * 8u - INDEX_BITS,
-          typename Tag = void>
+          u32 GEN_BITS = sizeof(HandleT) * 8u - INDEX_BITS, typename Tag = void>
 struct PoolHandle
 {
     static constexpr u32 HANDLE_SIZE_BITS = sizeof(HandleT) * 8u;
@@ -33,7 +32,7 @@ struct PoolHandle
     static_assert(INDEX_BITS + GEN_BITS <= HANDLE_SIZE_BITS,
                   "index + generation bits exceed the handle type");
 
-    HandleT index : INDEX_BITS         = 0;
+    HandleT index : INDEX_BITS          = 0;
     HandleT gen   : GEN_BITS + PAD_BITS = 0;
 
     constexpr bool empty() const { return gen == 0u; }
@@ -43,8 +42,11 @@ struct PoolHandle
 
     // The raw index/whole handle as an opaque pointer-sized value, for APIs
     // that traffic in void* ids (bindless indices, UI texture ids).
-    void* indexAsVoid() const { return reinterpret_cast<void*>((uintptr_t)index); }
-    void* handleAsVoid() const
+    void* index_as_void() const
+    {
+        return reinterpret_cast<void*>((uintptr_t)index);
+    }
+    void* handle_as_void() const
     {
         static_assert(sizeof(PoolHandle) <= sizeof(void*),
                       "handle does not fit a pointer");
@@ -67,10 +69,10 @@ struct PoolHandle
  * Pool
  *
  * Generational object pool over a dense array: `objects[handle.index]`.
- * PoolHandleT should be a PoolHandle<...> instantiation (or layout-compatible
- * with one). Index 0 is a normal, valid slot.
+ * PoolHandleT should be a PoolHandle<...> instantiation (or
+ * layout-compatible with one). Index 0 is a normal, valid slot.
  *
- * The dense array grows lazily: `objects.NumElements` is the high-water mark
+ * The dense array grows lazily: `objects.num_elements` is the high-water mark
  * of slots ever created, not the reserved capacity. Consumers may iterate the
  * dense array; freed slots keep their zeroed (T{}) payload.
  */
@@ -92,11 +94,11 @@ class Pool
         // never-created one (freed and never-created slots are both 0)
         const i32 found = freelist.find_first(false);
 
-        u32 index = found < 0 ? objects.NumElements : (u32)found;
-        if (index > objects.NumElements)
+        u32 index = found < 0 ? objects.num_elements : (u32)found;
+        if (index > objects.num_elements)
         {
             // chunk-padding bits past the high-water mark also read as free
-            index = objects.NumElements;
+            index = objects.num_elements;
         }
 
         if (index >= capacity_)
@@ -104,18 +106,18 @@ class Pool
             const u32 new_capacity = capacity_ * 2u;
             assert(new_capacity <= PoolHandleT::MAX_INDEX);
 
-            generations.Reserve(new_capacity);
-            objects.Reserve(new_capacity);
+            generations.reserve(new_capacity);
+            objects.reserve(new_capacity);
             freelist.resize(new_capacity);
             capacity_ = new_capacity;
         }
 
-        if (index == objects.NumElements)
+        if (index == objects.num_elements)
         {
             // never-created slot: extend the dense array (payload memory is
             // zero-initialized by the allocator) and seed its generation
-            objects.Resize(index + 1u);
-            generations.Resize(index + 1u);
+            objects.resize(index + 1u);
+            generations.resize(index + 1u);
             generations[index] = 1u;
         }
 
@@ -154,7 +156,10 @@ class Pool
 
     // ---------------- create/get/destroy surface ----------------
 
-    [[nodiscard]] PoolHandleT create(T&& elem) { return add_element(std::move(elem)); }
+    [[nodiscard]] PoolHandleT create(T&& elem)
+    {
+        return add_element(std::move(elem));
+    }
 
     void destroy(const PoolHandleT& handle) { remove_element(handle); }
 
@@ -168,11 +173,11 @@ class Pool
         return is_handle_valid(handle) ? &objects[(u32)handle.index] : nullptr;
     }
 
-    u32 numObjects() const { return num_alive_; }
+    u32 num_objects() const { return num_alive_; }
 
     void clear()
     {
-        for (u32 i = 0; i < generations.NumElements; i++)
+        for (u32 i = 0; i < generations.num_elements; i++)
         {
             if (!freelist[i])
             {
@@ -214,7 +219,7 @@ class Pool
         const u32 index = (u32)handle.index;
         // stored generations are >= 1, so an empty handle (gen 0) or a stale
         // one can never match
-        return index < generations.NumElements &&
+        return index < generations.num_elements &&
                (u32)handle.gen == generations[index];
     }
 
@@ -228,7 +233,7 @@ class Pool
   private:
     static constexpr u32 num_chunks_for(u32 num_elements)
     {
-        constexpr u32 bits_per_chunk = DynamicBitlist<64u>::BitsPerChunk;
+        constexpr u32 bits_per_chunk = DynamicBitlist<64u>::bits_per_chunk;
         return (num_elements + bits_per_chunk - 1u) / bits_per_chunk;
     }
 
@@ -240,7 +245,8 @@ class Pool
         }
     }
 
-    u32  capacity_  = 0u; // reserved slots; objects.NumElements is the high-water mark
+    u32 capacity_ =
+        0u; // reserved slots; objects.num_elements is the high-water mark
     u32  num_alive_ = 0u;
     bool dirty      = false;
 };

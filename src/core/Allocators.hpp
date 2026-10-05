@@ -16,8 +16,6 @@ namespace MemoryUtils
 
 static constexpr u32 DEFAULT_ALIGNMENT = 2 * sizeof(void*);
 
-
-
 constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 {
     uintptr_t p, a, modulo;
@@ -41,7 +39,7 @@ constexpr uintptr_t align_forward(uintptr_t ptr, size_t align)
 
 struct MemoryHandle
 {
-    class IAllocator const* owningAllocator = nullptr;
+    class IAllocator const* owning_allocator = nullptr;
 
     u64 offset;
     u64 size;
@@ -50,7 +48,7 @@ struct MemoryHandle
 
     inline bool is_valid() const
     {
-        return owningAllocator != nullptr && size > 0u;
+        return owning_allocator != nullptr && size > 0u;
     }
 };
 
@@ -58,41 +56,41 @@ struct MemoryHandle
 class IAllocator
 {
   public:
-    static constexpr MemoryHandle InvalidHandle = {};
+    static constexpr MemoryHandle invalid_handle = {};
 
     inline bool is_valid_handle(const MemoryHandle& handle) const
     {
-        return handle.owningAllocator == this;
+        return handle.owning_allocator == this;
     }
 
   public:
     struct AllocParams
     {
-        u32 bEnsureContiguousAlloc : 1  = false;
-        u32 Alignment              : 31 = MemoryUtils::DEFAULT_ALIGNMENT;
+        u32 ensure_contiguous_alloc : 1  = false;
+        u32 alignment               : 31 = MemoryUtils::DEFAULT_ALIGNMENT;
     };
 
   public:
     virtual bool is_linear() const = 0;
 
-    virtual void                       Init(size_t Size)                = 0;
-    [[nodiscard]] virtual MemoryHandle Allocate(size_t        Size,
+    virtual void                       init(size_t size)                = 0;
+    [[nodiscard]] virtual MemoryHandle allocate(size_t        size,
                                                 AllocParams&& params)   = 0;
-    virtual void                       Free(const MemoryHandle& handle) = 0;
-    virtual void                       FreeAll()                        = 0;
-    virtual size_t                     GetSize() const                  = 0;
-    virtual void  GetRawData(void*& out_data, u32* out_size)            = 0;
-    virtual void* HandleToPtr(const MemoryHandle& handle)               = 0;
+    virtual void                       free(const MemoryHandle& handle) = 0;
+    virtual void                       free_all()                       = 0;
+    virtual size_t                     get_size() const                 = 0;
+    virtual void  get_raw_data(void*& out_data, u32* out_size)          = 0;
+    virtual void* handle_to_ptr(const MemoryHandle& handle)             = 0;
 
     template <typename T>
     [[nodiscard]] constexpr MemoryHandle
-    Allocate(T*& out_obj, u32 Alignment = MemoryUtils::DEFAULT_ALIGNMENT)
+    allocate(T*& out_obj, u32 alignment = MemoryUtils::DEFAULT_ALIGNMENT)
     {
-        MemoryHandle handle = Allocate(sizeof(T), {true, Alignment});
+        MemoryHandle handle = allocate(sizeof(T), {true, alignment});
 
         if (handle.is_valid()) // valid handle to a contiguous block of memory
         {
-            out_obj = static_cast<T*>(HandleToPtr(handle));
+            out_obj = static_cast<T*>(handle_to_ptr(handle));
         }
 
         return handle;
@@ -100,14 +98,14 @@ class IAllocator
 
     template <typename T, class... Args>
         requires std::is_constructible_v<T, Args...>
-    [[nodiscard]] constexpr MemoryHandle Create(T** out_obj, Args&&... args)
+    [[nodiscard]] constexpr MemoryHandle create(T** out_obj, Args&&... args)
     {
-        MemoryHandle handle = Allocate(sizeof(T), {true});
+        MemoryHandle handle = allocate(sizeof(T), {true});
 
         if (handle.is_valid())
         {
             // Construct object in place
-            void* address = HandleToPtr(handle);
+            void* address = handle_to_ptr(handle);
             ::new (address) T(std::forward<Args>(args)...);
             *out_obj = static_cast<T*>(address);
         }
@@ -115,19 +113,20 @@ class IAllocator
         return handle;
     }
 
-    template <typename T, size_t _Alignment = alignof(T), class... Args>
+    template <typename T, size_t default_alignment = alignof(T), class... Args>
         requires std::is_constructible_v<T, Args...>
-    [[nodiscard]] constexpr MemoryHandle CreateArray(T*& out_obj, const u32 N,
-                                                     Args&&... args)
+    [[nodiscard]] constexpr MemoryHandle create_array(T*& out_obj, const u32 N,
+                                                      Args&&... args)
     {
-        out_obj            = nullptr;
-        MemoryHandle handle = Allocate(sizeof(T) * N, {true, _Alignment});
+        out_obj = nullptr;
+        MemoryHandle handle =
+            allocate(sizeof(T) * N, {true, default_alignment});
         assert(handle.is_valid());
 
         // Individually construct each element in place. (Array placement-new
         // `::new (addr) T[N]` may prepend an implementation-defined cookie and
         // overrun the allocation, so it is avoided.)
-        T* base_address = static_cast<T*>(HandleToPtr(handle));
+        T* base_address = static_cast<T*>(handle_to_ptr(handle));
         for (u32 i = 0; i < N; i++)
         {
             ::new (static_cast<void*>(base_address + i)) T(args...);
@@ -138,17 +137,17 @@ class IAllocator
     }
 };
 
-template <bool Linear>
+template <bool linear>
 class IAllocatorTempl : public IAllocator
 {
   public:
-    constexpr bool is_linear() const override { return Linear; }
+    constexpr bool is_linear() const override { return linear; }
 };
 
-template<typename TAlloc>
+template <typename TAlloc>
 concept contiguous_container = std::is_base_of_v<IAllocatorTempl<true>, TAlloc>;
 
-template <size_t _Alignment = MemoryUtils::DEFAULT_ALIGNMENT>
+template <size_t default_alignment = MemoryUtils::DEFAULT_ALIGNMENT>
 class ArenaAllocator final : public IAllocatorTempl<true>
 {
   public:
@@ -158,30 +157,30 @@ class ArenaAllocator final : public IAllocatorTempl<true>
 
   public:
     [[nodiscard]] constexpr ArenaAllocator() = default;
-    [[nodiscard]] explicit ArenaAllocator(size_t Size)
+    [[nodiscard]] explicit ArenaAllocator(size_t size)
     {
         buffer_len    = 0;
         buffer_offset = 0;
 
-        if (Size > 0)
+        if (size > 0)
         {
-            Init(Size);
+            init(size);
         }
     }
-    ~ArenaAllocator() { free(buffer);  }
+    ~ArenaAllocator() { ::free(buffer); }
 
     ArenaAllocator(const ArenaAllocator&)            = delete;
     ArenaAllocator& operator=(const ArenaAllocator&) = delete;
 
-    void GetRawData(void*& out_data, u32* out_size) override
+    void get_raw_data(void*& out_data, u32* out_size) override
     {
         out_data  = buffer;
         *out_size = static_cast<u32>(buffer_offset);
     }
 
-    void* HandleToPtr(const MemoryHandle& handle) override
+    void* handle_to_ptr(const MemoryHandle& handle) override
     {
-        if (!handle.is_valid() || handle.owningAllocator != this)
+        if (!handle.is_valid() || handle.owning_allocator != this)
         {
             return nullptr;
         }
@@ -189,40 +188,40 @@ class ArenaAllocator final : public IAllocatorTempl<true>
         return &buffer[handle.offset];
     }
 
-    void Init(size_t Size) override
+    void init(size_t size) override
     {
-        buffer     = static_cast<u8*>(malloc(Size));
-        buffer_len = Size;
+        buffer     = static_cast<u8*>(malloc(size));
+        buffer_len = size;
     }
 
-    [[nodiscard]] constexpr MemoryHandle Allocate(size_t        Size,
+    [[nodiscard]] constexpr MemoryHandle allocate(size_t        size,
                                                   AllocParams&& params) override
     {
         const uintptr_t current_address =
             (uintptr_t)buffer + (uintptr_t)buffer_offset;
         const uintptr_t aligned_offset =
-            MemoryUtils::align_forward(current_address, params.Alignment);
+            MemoryUtils::align_forward(current_address, params.alignment);
         const uintptr_t offset =
             aligned_offset - (uintptr_t)buffer; // Offset in local buffer
 
-        if (offset + Size <= buffer_len)
+        if (offset + size <= buffer_len)
         {
             // increment buffer offset counter
-            buffer_offset = offset + Size;
+            buffer_offset = offset + size;
 
-            memset(&buffer[offset], 0, Size);
+            memset(&buffer[offset], 0, size);
 
-            return {.owningAllocator = this, .offset = offset, .size = Size};
+            return {.owning_allocator = this, .offset = offset, .size = size};
         }
 
         // OUT OF MEMORY
-        return IAllocator::InvalidHandle;
+        return IAllocator::invalid_handle;
     }
 
-    size_t GetSize() const override { return buffer_len; }
+    size_t get_size() const override { return buffer_len; }
 
-    void Free(const MemoryHandle&) override {}
-    void FreeAll() override { buffer_offset = 0; };
+    void free(const MemoryHandle&) override {}
+    void free_all() override { buffer_offset = 0; };
 };
 
 /*
@@ -243,8 +242,8 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
         FreeBlock* next; // next free block, sorted by address
     };
 
-    static constexpr size_t MIN_BLOCK_SIZE =
-        MemoryUtils::align_forward(sizeof(FreeBlock), MemoryUtils::DEFAULT_ALIGNMENT);
+    static constexpr size_t MIN_BLOCK_SIZE = MemoryUtils::align_forward(
+        sizeof(FreeBlock), MemoryUtils::DEFAULT_ALIGNMENT);
 
   public:
     u8*        buffer     = nullptr;
@@ -253,41 +252,43 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
 
   public:
     [[nodiscard]] constexpr LinearBlockAllocator() = default;
-    [[nodiscard]] explicit LinearBlockAllocator(size_t Size)
+    [[nodiscard]] explicit LinearBlockAllocator(size_t size)
     {
-        if (Size > 0)
+        if (size > 0)
         {
-            Init(Size);
+            init(size);
         }
     }
-    ~LinearBlockAllocator() { free(buffer); }
+    ~LinearBlockAllocator() { ::free(buffer); }
 
     LinearBlockAllocator(const LinearBlockAllocator&)            = delete;
     LinearBlockAllocator& operator=(const LinearBlockAllocator&) = delete;
 
-    void Init(size_t Size) override
+    void init(size_t size) override
     {
         assert(buffer == nullptr);
 
-        Size       = MemoryUtils::align_forward(Size, MemoryUtils::DEFAULT_ALIGNMENT);
-        buffer     = static_cast<u8*>(malloc(Size));
-        buffer_len = Size;
+        size = MemoryUtils::align_forward(size, MemoryUtils::DEFAULT_ALIGNMENT);
+        buffer     = static_cast<u8*>(malloc(size));
+        buffer_len = size;
 
-        FreeAll();
+        free_all();
     }
 
-    [[nodiscard]] MemoryHandle Allocate(size_t Size, AllocParams&& params) override
+    [[nodiscard]] MemoryHandle allocate(size_t        size,
+                                        AllocParams&& params) override
     {
-        assert(params.Alignment <= MemoryUtils::DEFAULT_ALIGNMENT);
+        assert(params.alignment <= MemoryUtils::DEFAULT_ALIGNMENT);
 
         // Round every allocation up so any split remainder stays aligned and
         // can hold a header when freed.
         const size_t block_size = MemoryUtils::align_forward(
-            Size < MIN_BLOCK_SIZE ? MIN_BLOCK_SIZE : Size,
+            size < MIN_BLOCK_SIZE ? MIN_BLOCK_SIZE : size,
             MemoryUtils::DEFAULT_ALIGNMENT);
 
         FreeBlock** link = &freelist;
-        for (FreeBlock* block = freelist; block; link = &block->next, block = block->next)
+        for (FreeBlock* block = freelist; block;
+             link = &block->next, block = block->next)
         {
             if (block->size < block_size)
             {
@@ -309,21 +310,23 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
                 *link = block->next;
             }
 
-            const size_t handed_out = remainder >= MIN_BLOCK_SIZE ? block_size : block->size;
-            const u64    offset     = (u64)(reinterpret_cast<u8*>(block) - buffer);
+            const size_t handed_out =
+                remainder >= MIN_BLOCK_SIZE ? block_size : block->size;
+            const u64 offset = (u64)(reinterpret_cast<u8*>(block) - buffer);
 
             memset(block, 0, handed_out);
 
-            return {.owningAllocator = this, .offset = offset, .size = handed_out};
+            return {
+                .owning_allocator = this, .offset = offset, .size = handed_out};
         }
 
         // OUT OF MEMORY (or too fragmented)
-        return IAllocator::InvalidHandle;
+        return IAllocator::invalid_handle;
     }
 
-    void Free(const MemoryHandle& handle) override
+    void free(const MemoryHandle& handle) override
     {
-        if (!handle.is_valid() || handle.owningAllocator != this)
+        if (!handle.is_valid() || handle.owning_allocator != this)
         {
             return;
         }
@@ -340,8 +343,8 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
         freed->next = *link;
         *link       = freed;
 
-        if (freed->next &&
-            reinterpret_cast<u8*>(freed) + freed->size == reinterpret_cast<u8*>(freed->next))
+        if (freed->next && reinterpret_cast<u8*>(freed) + freed->size ==
+                               reinterpret_cast<u8*>(freed->next))
         {
             freed->size += freed->next->size;
             freed->next = freed->next->next;
@@ -351,7 +354,8 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
         {
             FreeBlock* prev = reinterpret_cast<FreeBlock*>(
                 reinterpret_cast<u8*>(link) - offsetof(FreeBlock, next));
-            if (reinterpret_cast<u8*>(prev) + prev->size == reinterpret_cast<u8*>(freed))
+            if (reinterpret_cast<u8*>(prev) + prev->size ==
+                reinterpret_cast<u8*>(freed))
             {
                 prev->size += freed->size;
                 prev->next = freed->next;
@@ -359,24 +363,24 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
         }
     }
 
-    void FreeAll() override
+    void free_all() override
     {
         freelist       = reinterpret_cast<FreeBlock*>(buffer);
         freelist->size = buffer_len;
         freelist->next = nullptr;
     }
 
-    size_t GetSize() const override { return buffer_len; }
+    size_t get_size() const override { return buffer_len; }
 
-    void GetRawData(void*& out_data, u32* out_size) override
+    void get_raw_data(void*& out_data, u32* out_size) override
     {
         out_data  = buffer;
         *out_size = static_cast<u32>(buffer_len);
     }
 
-    void* HandleToPtr(const MemoryHandle& handle) override
+    void* handle_to_ptr(const MemoryHandle& handle) override
     {
-        if (!handle.is_valid() || handle.owningAllocator != this)
+        if (!handle.is_valid() || handle.owning_allocator != this)
         {
             return nullptr;
         }
@@ -386,16 +390,16 @@ class LinearBlockAllocator final : public IAllocatorTempl<false>
 };
 
 template <contiguous_container AllocatorA, contiguous_container AllocatorB>
-inline void CopyFrom(const AllocatorA* src, AllocatorB* dst)
+inline void copy_from(const AllocatorA* src, AllocatorB* dst)
 {
     assert(src->buffer_offset <= dst->buffer_len);
     std::memcpy(dst->buffer, src->buffer, src->buffer_offset);
 }
 
 template <contiguous_container AllocatorA, contiguous_container AllocatorB>
-inline void MoveFrom(AllocatorA* src, AllocatorB* dst)
+inline void move_from(AllocatorA* src, AllocatorB* dst)
 {
     assert(src->buffer_offset <= dst->buffer_len);
     std::memmove(dst->buffer, src->buffer, src->buffer_offset);
-    src->FreeAll();
+    src->free_all();
 }

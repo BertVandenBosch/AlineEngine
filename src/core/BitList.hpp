@@ -19,12 +19,12 @@
 template <u32 N, typename WordType = u32>
 struct BitList final
 {
-    static constexpr u32 BitsPerWord = sizeof(WordType) * 8u;
-    static constexpr u32 NumWords    = round_to(N, BitsPerWord) / BitsPerWord;
-    static constexpr u32 NumBits     = BitsPerWord * NumWords;
+    static constexpr u32 bits_per_word = sizeof(WordType) * 8u;
+    static constexpr u32 num_words = round_to(N, bits_per_word) / bits_per_word;
+    static constexpr u32 num_bits  = bits_per_word * num_words;
 
   public:
-    alignas(16) WordType data[NumWords] = {0};
+    alignas(16) WordType data[num_words] = {0};
 
   public:
     constexpr BitList() {}
@@ -32,7 +32,7 @@ struct BitList final
     explicit BitList(std::initializer_list<WordType> il)
     {
         const u32 usable_size =
-            std::min((u32)il.size(), NumWords) * sizeof(WordType);
+            std::min((u32)il.size(), num_words) * sizeof(WordType);
         memcpy(&data, il.begin(), usable_size);
     }
 
@@ -68,7 +68,7 @@ struct BitList final
         u32 word_start_index, bit_start_index;
         get_indices(start_index, word_start_index, bit_start_index);
 
-        for (u32 word_i = word_start_index; word_i < NumWords; word_i++)
+        for (u32 word_i = word_start_index; word_i < num_words; word_i++)
         {
             const u32 bit_start_offset =
                 word_i == word_start_index ? bit_start_index : 0u;
@@ -78,7 +78,7 @@ struct BitList final
             word = flag ? word : ~word;
 
             i32 set_index = -1;
-            if constexpr (BitsPerWord <= 32u)
+            if constexpr (bits_per_word <= 32u)
             {
                 set_index = Intrinsics::find_lsb((u32)word);
             }
@@ -89,7 +89,7 @@ struct BitList final
             if (set_index >= 0)
             {
                 const i32 result =
-                    set_index + bit_start_offset + (word_i * BitsPerWord);
+                    set_index + bit_start_offset + (word_i * bits_per_word);
                 // Bits past N in the last word are padding; a `false` search
                 // reads them as free -- reject.
                 return result < (i32)N ? result : -1;
@@ -103,12 +103,12 @@ struct BitList final
                                       u32& out_bit_index) const
     {
         out_word_index = word_index_from_index(index);
-        out_bit_index  = index - (out_word_index * BitsPerWord);
+        out_bit_index  = index - (out_word_index * bits_per_word);
     }
 
     inline constexpr u32 word_index_from_index(u32 index) const
     {
-        return round_down(index, BitsPerWord) / BitsPerWord;
+        return round_down(index, bits_per_word) / bits_per_word;
     }
 
     inline constexpr bool operator[](u32 index) const
@@ -128,20 +128,20 @@ struct BitList final
     }
 };
 
-template <u32 ChunkSize = 32u>
-    requires is_power_of_two_v<ChunkSize>
+template <u32 chunk_size = 32u>
+    requires is_power_of_two_v<chunk_size>
 struct DynamicBitlist
 {
-    static constexpr u32 BitsPerChunk = BitList<ChunkSize>::NumBits;
+    static constexpr u32 bits_per_chunk = BitList<chunk_size>::num_bits;
 
     constexpr DynamicBitlist(IAllocator& allocator, u32 num_chunks = 2)
         : chunks(allocator, num_chunks),
-          total_capacity(num_chunks * BitsPerChunk)
+          total_capacity(num_chunks * bits_per_chunk)
     {
-        chunks.Resize(num_chunks);
+        chunks.resize(num_chunks);
     }
 
-    Array<BitList<ChunkSize>> chunks;
+    Array<BitList<chunk_size>> chunks;
 
     u32 total_capacity;
 
@@ -150,7 +150,7 @@ struct DynamicBitlist
         assert(index < total_capacity);
 
         const u32 chunk_idx    = index_to_chunk_index(index);
-        const u32 in_chunk_idx = index - chunk_idx * BitsPerChunk;
+        const u32 in_chunk_idx = index - chunk_idx * bits_per_chunk;
 
         assert(chunk_idx < num_chunks());
 
@@ -162,7 +162,7 @@ struct DynamicBitlist
         assert(index < total_capacity);
 
         const u32 chunk_idx    = index_to_chunk_index(index);
-        const u32 in_chunk_idx = index - chunk_idx * BitsPerChunk;
+        const u32 in_chunk_idx = index - chunk_idx * bits_per_chunk;
 
         assert(chunk_idx < num_chunks());
 
@@ -177,16 +177,16 @@ struct DynamicBitlist
         }
 
         const u32 needed_chunks =
-            (new_capacity + BitsPerChunk - 1u) / BitsPerChunk;
+            (new_capacity + bits_per_chunk - 1u) / bits_per_chunk;
         const u32 new_num_chunks = round_up_pow2(needed_chunks);
-        chunks.Resize(new_num_chunks);
+        chunks.resize(new_num_chunks);
 
-        total_capacity = BitsPerChunk * new_num_chunks;
+        total_capacity = bits_per_chunk * new_num_chunks;
     }
 
     inline const u32 index_to_chunk_index(u32 index) const
     {
-        return round_down(index, BitsPerChunk) / BitsPerChunk;
+        return round_down(index, bits_per_chunk) / bits_per_chunk;
     }
 
     inline bool operator[](u32 index) const
@@ -194,7 +194,7 @@ struct DynamicBitlist
         assert(index < total_capacity);
 
         const u32 chunk_idx = index_to_chunk_index(index);
-        return chunks[chunk_idx][index - chunk_idx * BitsPerChunk];
+        return chunks[chunk_idx][index - chunk_idx * bits_per_chunk];
     }
 
     /*
@@ -204,38 +204,40 @@ struct DynamicBitlist
     {
         const u32 chunk_start = index_to_chunk_index(start_index);
 
-        for (u32 i = chunk_start; i < chunks.NumElements; i++)
+        for (u32 i = chunk_start; i < chunks.num_elements; i++)
         {
             const u32 in_chunk_start =
-                i == chunk_start ? start_index - chunk_start * BitsPerChunk : 0u;
+                i == chunk_start ? start_index - chunk_start * bits_per_chunk
+                                 : 0u;
 
-            const i32 first_in_chunk = chunks[i].find_first(flag, in_chunk_start);
+            const i32 first_in_chunk =
+                chunks[i].find_first(flag, in_chunk_start);
             if (first_in_chunk >= 0)
             {
-                return first_in_chunk + i * BitsPerChunk;
+                return first_in_chunk + i * bits_per_chunk;
             }
         }
 
         return -1;
     }
 
-    inline u32 size_bits() const { return num_chunks() * BitsPerChunk; }
+    inline u32 size_bits() const { return num_chunks() * bits_per_chunk; }
 
-    inline const u32 num_chunks() const { return chunks.NumElements; }
+    inline const u32 num_chunks() const { return chunks.num_elements; }
 };
 
-static constexpr u32 aantal_bits = BitList<128>::NumBits;
+static constexpr u32 aantal_bits = BitList<128>::num_bits;
 
 template <u32 N>
 BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
 {
-    assert(BitList<N>::BitsPerWord <= 128u);
+    assert(BitList<N>::bits_per_word <= 128u);
 
     BitList<N> result;
 
-    constexpr u32 words_per_chunk = 128u / BitList<N>::BitsPerWord;
+    constexpr u32 words_per_chunk = 128u / BitList<N>::bits_per_word;
 
-    for (u32 i = 0; i < BitList<N>::NumWords; i += words_per_chunk)
+    for (u32 i = 0; i < BitList<N>::num_words; i += words_per_chunk)
     {
         __m128i chunk_a;
         __m128i chunk_b;
@@ -243,11 +245,11 @@ BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
         u128 pad_chunk_a;
         u128 pad_chunk_b;
 
-        bool pad_chunk = i + words_per_chunk >= BitList<N>::NumWords;
+        bool pad_chunk = i + words_per_chunk >= BitList<N>::num_words;
         if (pad_chunk)
         {
             const u32 num_remaining_bytes =
-                (BitList<N>::NumWords - i) * (BitList<N>::BitsPerWord / 8u);
+                (BitList<N>::num_words - i) * (BitList<N>::bits_per_word / 8u);
 
             // init padded chunks to zero
             pad_chunk_a = {.value = {.ll = {0u, 0u}}};
@@ -274,7 +276,7 @@ BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
 // VALIDATION
 #if 0
     BitList<N> result_validation;
-    for (u32 i = 0u; i < BitList<N>::NumWords; i++)
+    for (u32 i = 0u; i < BitList<N>::num_words; i++)
     {
         result_validation.data[i] = a.data[i] ^ b.data[i];
     }

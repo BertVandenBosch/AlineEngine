@@ -5,13 +5,13 @@
 
 enum ESOA_MEMBERS_STYLE
 {
-    EXPLICIT, // Access TContainer::Type member values (if e.g. a custom struct)
+    EXPLICIT, // Access container_type::Type member values (if e.g. a custom struct)
               // by name
-    ANONOYMOUS // Access TContainer::Type member values as inlined member value
+    ANONOYMOUS // Access container_type::Type member values as inlined member value
                // (like jai's #using implementation)
 };
 
-template <typename TContainer, ESOA_MEMBERS_STYLE Members = EXPLICIT>
+template <typename TContainer, ESOA_MEMBERS_STYLE members_style = EXPLICIT>
 struct SOA
 {
 
