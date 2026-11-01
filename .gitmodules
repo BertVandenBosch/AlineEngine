@@ -1,3 +1,9 @@
 [submodule "src/NoGraphicsAPI"]
 	path = src/NoGraphicsAPI
 	url = https://github.com/BertVandenBosch/NoGraphicsAPI.git
+[submodule "src/meshoptimizer"]
+	path = src/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+[submodule "src/tinygltf"]
+	path = src/tinygltf
+	url = https://github.com/syoyo/tinygltf.git
