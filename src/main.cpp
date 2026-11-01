@@ -9,6 +9,8 @@
 #include "core/Pool.hpp"
 #include "core/StringBuilder.hpp"
 
+void run_gltf_import_tests(); // gfx/GltfImportTests.cpp
+
 static void run_core_tests()
 {
     ArenaAllocator arena(KB(64));
@@ -156,6 +158,7 @@ static void run_core_tests()
 int main()
 {
     run_core_tests();
+    run_gltf_import_tests();
 
     BitList<16> freelist;
 

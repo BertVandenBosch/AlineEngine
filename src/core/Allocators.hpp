@@ -204,7 +204,8 @@ class ArenaAllocator final : public IAllocatorTempl<true>
         const uintptr_t offset =
             aligned_offset - (uintptr_t)buffer; // Offset in local buffer
 
-        if (offset + size <= buffer_len)
+        // written so a huge `size` cannot wrap the comparison
+        if (offset <= buffer_len && size <= buffer_len - offset)
         {
             // increment buffer offset counter
             buffer_offset = offset + size;
