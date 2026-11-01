@@ -7,8 +7,11 @@
 
 #include <cassert>
 #include <cstring>
-#include <immintrin.h>
 #include <initializer_list>
+
+#if defined(__SSE2__)
+#include <immintrin.h>
+#endif
 
 /*
  * Free list helper DS.
@@ -235,6 +238,13 @@ BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
 
     BitList<N> result;
 
+#if !defined(__SSE2__)
+    // No SSE2 (e.g. Apple silicon): plain word XOR, which compilers vectorize.
+    for (u32 i = 0u; i < BitList<N>::num_words; i++)
+    {
+        result.data[i] = a.data[i] ^ b.data[i];
+    }
+#else
     constexpr u32 words_per_chunk = 128u / BitList<N>::bits_per_word;
 
     for (u32 i = 0; i < BitList<N>::num_words; i += words_per_chunk)
@@ -272,6 +282,7 @@ BitList<N> bitlist_changed(const BitList<N>& a, const BitList<N>& b)
         // copy result from register to resulting array
         memcpy(&result.data[i], &chunk_result, sizeof(__m128i));
     }
+#endif
 
 // VALIDATION
 #if 0
