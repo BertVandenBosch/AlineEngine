@@ -2,7 +2,7 @@
 
 #include "core/Allocators.hpp"
 #include "core/Pool.hpp"
-#include "gfx/GltfImport.hpp"
+#include "import/GltfImport.hpp"
 #include "gfx/scene_shared.h"
 
 #include <NoGraphicsAPI/NoGraphicsAPI.hpp>

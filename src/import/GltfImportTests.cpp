@@ -1,6 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS // plain fopen for the crafted test files
 
-#include "gfx/GltfImport.hpp"
+#include "import/GltfImport.hpp"
 
 #include <math.h>
 #include <stdio.h>

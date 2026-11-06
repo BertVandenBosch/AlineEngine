@@ -1,4 +1,4 @@
-#include "gfx/GltfImport.hpp"
+#include "import/GltfImport.hpp"
 
 #include <float.h>
 #include <math.h>
