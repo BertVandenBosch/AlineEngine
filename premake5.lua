@@ -459,7 +459,9 @@ local function check_shader_tools()
 		return
 	end
 	local quoted = "'" .. SLANGC_MACOS:gsub("'", "'\\''") .. "'" -- run directly by the shell, not via ninja
-	local version = { (os.outputof(quoted .. " -version 2>&1") or ""):match("(%d+)%.(%d+)%.(%d+)") }
+	-- Some releases print only major.minor (e.g. "2026.21"); a missing patch counts as 0.
+	local major, minor, patch = (os.outputof(quoted .. " -version 2>&1") or ""):match("(%d+)%.(%d+)%.?(%d*)")
+	local version = major and { major, minor, patch ~= "" and patch or "0" } or {}
 	local recent = false
 	for i = 1, 3 do
 		local part = tonumber(version[i] or -1)
