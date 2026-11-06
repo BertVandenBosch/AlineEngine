@@ -10,6 +10,7 @@
 #include "core/StringBuilder.hpp"
 
 void run_gltf_import_tests(); // gfx/GltfImportTests.cpp
+void run_scene_tests();       // gfx/SceneTests.cpp
 
 static void run_core_tests()
 {
@@ -159,6 +160,7 @@ int main()
 {
     run_core_tests();
     run_gltf_import_tests();
+    run_scene_tests();
 
     BitList<16> freelist;
 

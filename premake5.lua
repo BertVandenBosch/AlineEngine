@@ -448,15 +448,15 @@ if SLANGC_MACOS:find("/") then
 end
 local SLANGC = METAL and shell_path(SLANGC_MACOS) or path.translate(VULKAN_SDK_DIR .. "/Bin/slangc.exe")
 
--- On a Mac the example shaders need slangc >= 2026.18.2 (the minimum
--- NoGraphicsAPI's CMake enforces) and Xcode's Metal toolchain; the engine
--- needs neither, so without them the examples are skipped with a warning.
+-- On a Mac the shaders need slangc >= 2026.18.2 (the minimum NoGraphicsAPI's
+-- CMake enforces) and Xcode's Metal toolchain. Checked when premake runs, so a
+-- missing tool is reported up front instead of halfway through the build.
 -- Only probed when generating on the Mac itself.
 local SLANG_MIN_VERSION = { 2026, 18, 2 }
 
-local function shader_tools_available()
+local function check_shader_tools()
 	if not (METAL and os.ishost("macosx")) then
-		return true
+		return
 	end
 	local quoted = "'" .. SLANGC_MACOS:gsub("'", "'\\''") .. "'" -- run directly by the shell, not via ninja
 	local version = { (os.outputof(quoted .. " -version 2>&1") or ""):match("(%d+)%.(%d+)%.(%d+)") }
@@ -470,16 +470,38 @@ local function shader_tools_available()
 		recent = i == 3
 	end
 	if not recent then
-		print("Warning: skipping the NoGraphicsAPI examples: they need slangc >= " .. table.concat(SLANG_MIN_VERSION, ".") ..
+		error("the shaders need slangc >= " .. table.concat(SLANG_MIN_VERSION, ".") ..
 			" (on PATH or via SLANGC), found " .. (version[1] and table.concat(version, ".") or "none"))
-		return false
 	end
 	if not os.execute("xcrun -sdk macosx metal --version >/dev/null 2>&1") then
-		print("Warning: skipping the NoGraphicsAPI examples: Xcode's Metal toolchain is missing" ..
-			" (install it with `xcodebuild -downloadComponent MetalToolchain`)")
-		return false
+		error("the shaders need Xcode's Metal toolchain (install it with `xcodebuild -downloadComponent MetalToolchain`)")
 	end
-	return true
+end
+
+check_shader_tools()
+
+-- Commands compiling one Slang entry point for the target backend, with the
+-- same options as NoGraphicsAPI's CMake rules. `source`, `include_dirs` and
+-- `out` are absolute paths.
+local function slang_compile(source, include_dirs, stage, entry, out)
+	local slang = SLANGC .. " " .. shell_path(source)
+	local common = " -entry " .. entry .. " -stage " .. stage .. " -fvk-use-c-layout -matrix-layout-row-major"
+	for _, dir in ipairs(include_dirs) do
+		common = common .. " -I " .. shell_path(dir)
+	end
+	if METAL then
+		return {
+			slang .. " -target metal -DNOGRAPHICSAPI_METAL" .. common .. " -o " .. shell_path(out .. ".metal"),
+			"xcrun -sdk macosx metal -std=metal4.0 -target air64-apple-macos" .. MACOS_VERSION ..
+				" -c " .. shell_path(out .. ".metal") .. " -o " .. shell_path(out .. ".air"),
+			"xcrun -sdk macosx metallib " .. shell_path(out .. ".air") .. " -o " .. shell_path(out),
+		}
+	end
+	return {
+		slang .. " -target spirv -profile spirv_1_5 -emit-spirv-directly -fvk-use-entrypoint-name" .. common ..
+			" -capability spvDescriptorHeapEXT -o " .. out,
+		path.translate(VULKAN_SDK_DIR .. "/Bin/spirv-val.exe") .. " --target-env vulkan1.4 --scalar-block-layout " .. out,
+	}
 end
 
 local function example_project(name, dir, opts)
@@ -541,23 +563,11 @@ local function example_project(name, dir, opts)
 		links { METAL and "AppKit.framework" or "user32" } -- the example window
 
 		local function compile_shader(stage, entry, out)
-			local slang = SLANGC .. " " .. shell_path(root .. "/" .. src_dir .. "/" .. shader .. ".slang")
-			local common = " -entry " .. entry .. " -stage " .. stage .. " -fvk-use-c-layout -matrix-layout-row-major" ..
-				" -I " .. shell_path(root .. "/" .. src_dir) .. " -I " .. shell_path(root .. "/src/NoGraphicsAPI/include") ..
-				" -I " .. shell_path(root .. "/src/NoGraphicsAPI/utility/include")
-			if METAL then
-				return {
-					slang .. " -target metal -DNOGRAPHICSAPI_METAL" .. common .. " -o " .. shell_path(out .. ".metal"),
-					"xcrun -sdk macosx metal -std=metal4.0 -target air64-apple-macos" .. MACOS_VERSION ..
-						" -c " .. shell_path(out .. ".metal") .. " -o " .. shell_path(out .. ".air"),
-					"xcrun -sdk macosx metallib " .. shell_path(out .. ".air") .. " -o " .. shell_path(out),
-				}
-			end
-			return {
-				slang .. " -target spirv -profile spirv_1_5 -emit-spirv-directly -fvk-use-entrypoint-name" .. common ..
-					" -capability spvDescriptorHeapEXT -o " .. out,
-				path.translate(VULKAN_SDK_DIR .. "/Bin/spirv-val.exe") .. " --target-env vulkan1.4 --scalar-block-layout " .. out,
-			}
+			return slang_compile(root .. "/" .. src_dir .. "/" .. shader .. ".slang", {
+				root .. "/" .. src_dir,
+				root .. "/src/NoGraphicsAPI/include",
+				root .. "/src/NoGraphicsAPI/utility/include",
+			}, stage, entry, out)
 		end
 		-- Custom build rule on the .slang file. (prebuildcommands is avoided: on
 		-- Windows the ninja action appends stamp-file commands to it with `\"`
@@ -596,21 +606,19 @@ local function example_project(name, dir, opts)
 	end
 end
 
-if shader_tools_available() then
-	example_project("Triangle", "triangle", {
-		shader = "triangle",
-		define_prefix = "NOGRAPHICSAPI",
-	})
+example_project("Triangle", "triangle", {
+	shader = "triangle",
+	define_prefix = "NOGRAPHICSAPI",
+})
 
-	example_project("Cube", "cube", {
-		shader = "cube",
-		define_prefix = "NOGRAPHICSAPI_CUBE",
-		utility = true,
-		defines = { 'NOGRAPHICSAPI_CUBE_TEXTURE_PATH="' .. path.getabsolute(EXAMPLES .. "/cube/lunarg_logo_256x256.rgba8") .. '"' },
-		extra_files = { EXAMPLES .. "/cube/cube_shared.h" },
-		extra_inputs = { path.getabsolute(EXAMPLES .. "/cube/cube_shared.h") },
-	})
-end
+example_project("Cube", "cube", {
+	shader = "cube",
+	define_prefix = "NOGRAPHICSAPI_CUBE",
+	utility = true,
+	defines = { 'NOGRAPHICSAPI_CUBE_TEXTURE_PATH="' .. path.getabsolute(EXAMPLES .. "/cube/lunarg_logo_256x256.rgba8") .. '"' },
+	extra_files = { EXAMPLES .. "/cube/cube_shared.h" },
+	extra_inputs = { path.getabsolute(EXAMPLES .. "/cube/cube_shared.h") },
+})
 
 project "AlineEngine"
 do
@@ -640,6 +648,36 @@ do
 
 	-- Repository root, so tests can open the sample models in the submodules.
 	defines { 'ALINE_ROOT_DIR="' .. path.getabsolute(".") .. '"' }
+
+	-- Engine shaders (src/gfx/shaders/*.slang): compute entry point
+	-- `computeMain`, compiled to build/shaders/<name>.spv (Vulkan) or .metallib
+	-- (macOS). Code loads them from ALINE_SHADER_DIR "/<name>" ALINE_SHADER_EXTENSION.
+	local shader_extension = METAL and ".metallib" or ".spv"
+	files { "src/gfx/shaders/*.slang" }
+	defines {
+		'ALINE_SHADER_DIR="' .. SHADER_DIR .. '"',
+		'ALINE_SHADER_EXTENSION="' .. shader_extension .. '"',
+	}
+	filter "files:src/gfx/shaders/*.slang"
+	do
+		local root = path.getabsolute(".")
+		local out = SHADER_DIR .. "/%{file.basename}" .. shader_extension
+		buildmessage "Compiling %{file.name}"
+		buildcommands(slang_compile("%{file.abspath}", {
+			root .. "/src",
+			root .. "/src/NoGraphicsAPI/include",
+			root .. "/src/NoGraphicsAPI/utility/include",
+		}, "compute", "computeMain", out))
+		buildoutputs { out }
+		buildinputs {
+			root .. "/src/gfx/scene_shared.h",
+			root .. "/src/gfx/cluster_mesh_shared.h",
+			root .. "/src/NoGraphicsAPI/include/NoGraphicsAPI/shader.slang",
+			root .. "/src/NoGraphicsAPI/include/NoGraphicsAPI/types.h",
+			root .. "/src/NoGraphicsAPI/utility/include/NoGraphicsAPIUtility/shader_types.h",
+		}
+	end
+	filter {}
 
 	-- Header search paths -----------------------------------------------
 	includedirs {
