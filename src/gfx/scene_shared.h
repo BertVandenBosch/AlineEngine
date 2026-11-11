@@ -7,8 +7,8 @@
  *
  * Flat arrays indexed by the handle index of the CPU-side pools: world
  * transforms, static mesh instances and mesh records. The CPU never keeps a
- * copy of transforms or mesh data; changes are written into a per-frame
- * upload slice and scattered into these arrays on the GPU (scene_scatter.slang).
+ * copy of transforms or mesh data; changes are copied into a block of the
+ * upload ring and scattered into these arrays on the GPU (scene_scatter.slang).
  */
 
 static const uint32 static_mesh_visible      = 1u; // flags; 0 = empty slot, skipped by culling
@@ -23,7 +23,7 @@ struct GpuStaticMesh
     uint32 reserved;  // 0 (future: 4 x 8-bit material ids)
 };
 
-// 64-byte root of the scatter dispatch, allocated in the frame's upload slice.
+// 64-byte root of the scatter dispatch, at the start of the frame's upload ring block.
 struct SceneScatterRoot
 {
     uint32*        transform_indices;

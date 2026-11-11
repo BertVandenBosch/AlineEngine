@@ -13,6 +13,8 @@
  * word (the Vulkan backend has no 8-bit storage and no shaderInt64).
  *
  * Section order in a mesh blob: clusters | triangles | positions | attributes.
+ * A mesh has 1..mesh_max_lods discrete LODs, each a contiguous cluster range
+ * (LOD0 first). Simplified LODs reuse LOD0's vertices on the same grid.
  */
 
 // Mesh shaders are compiled for these output sizes; import settings may be lower, never higher.
@@ -22,6 +24,7 @@ static const uint32 cluster_thread_count  = 32;
 static const uint32 mesh_position_bits    = 21;
 static const uint32 mesh_max_elements     = 1u << 24;    // vertices, and triangles, per mesh (24-bit cluster offsets)
 static const uint32 mesh_no_cone          = 0x7F000000u; // cutoff 127, axis 0: never cone-culls
+static const uint32 mesh_max_lods         = 8;
 
 // 8 bytes. Grid-step offsets from the cluster anchor: x bits 0-20, y 21-41, z 42-62, bit 63 = 0.
 // position = cluster.aabb_min + float3(x, y, z) * mesh.position_step
@@ -54,7 +57,15 @@ struct MeshAttribute
 // Triangles are a plain uint32 array: a | b << 8 | c << 16 (cluster-local indices), top byte 0.
 // bitangent = cross(normal, tangent) * sign (glTF convention).
 
-// 96 bytes. Per-mesh record in GPU memory, read through a pointer.
+// 8 bytes. LOD i uses clusters [lods[i].first_cluster, lods[i + 1].first_cluster), the last one up to cluster_count.
+struct MeshLod
+{
+    uint32 first_cluster;
+    float  error; // object-space simplification error vs. LOD0; 0 for LOD0, never decreasing
+};
+
+// 176 bytes. Per-mesh record in GPU memory, read through a pointer. The LOD table is inline, so LOD selection
+// needs no further loads.
 struct GpuMesh
 {
     MeshCluster*   clusters;
@@ -64,10 +75,13 @@ struct GpuMesh
     float3         aabb_min;
     float          position_step;
     float3         aabb_max;
-    uint32         cluster_count;
-    float4         sphere; // xyz centre, w radius
+    uint32         cluster_count; // all LODs
+    float4         sphere;        // xyz centre, w radius; bounds every LOD
     float2         uv_min;
     float2         uv_scale;
+    uint32         lod_count;
+    uint32         lod_reserved[3];
+    MeshLod        lods[mesh_max_lods];
 };
 
 #if !defined(__SLANG__)
@@ -76,6 +90,7 @@ static_assert(sizeof(MeshCluster) == 32 && offsetof(MeshCluster, cone) == 12 &&
               offsetof(MeshCluster, extent) == 16 && offsetof(MeshCluster, vertices) == 24);
 static_assert(sizeof(MeshPosition) == 8 && sizeof(MeshAttribute) == 12);
 static_assert(cluster_max_vertices <= 256 && cluster_max_triangles <= 256); // counts - 1 fit in 8 bits
-static_assert(sizeof(GpuMesh) == 96 && offsetof(GpuMesh, aabb_min) == 32 &&
-              offsetof(GpuMesh, sphere) == 64 && offsetof(GpuMesh, uv_min) == 80);
+static_assert(sizeof(MeshLod) == 8);
+static_assert(sizeof(GpuMesh) == 176 && offsetof(GpuMesh, aabb_min) == 32 && offsetof(GpuMesh, sphere) == 64 &&
+              offsetof(GpuMesh, uv_min) == 80 && offsetof(GpuMesh, lod_count) == 96 && offsetof(GpuMesh, lods) == 112);
 #endif

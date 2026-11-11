@@ -1198,7 +1198,96 @@ static void validate_round_trip(ArenaAllocator<>& arena, const SourceCorner* cor
 }
 #endif
 
-// Stage 2: dedup, cluster, quantize and pack into a compact blob at the arena mark.
+// Simplifier attribute weights, relative to positions: unit normals, and UVs in texture coordinates.
+static constexpr float lod_normal_weight = 1.0f;
+static constexpr float lod_uv_weight     = 0.5f;
+static constexpr float lod_min_reduction = 0.8f; // a LOD keeping more of the previous one's triangles ends the chain
+
+// Inverse of oct_encode, normalized.
+static void oct_decode(u32 packed, int bits, float out[3])
+{
+    const u32   mask = (1u << bits) - 1u;
+    const int   bias = (1 << (bits - 1)) - 1;
+    const float u    = (float)((i32)(packed & mask) - bias) / (float)bias;
+    const float v    = (float)((i32)((packed >> bits) & mask) - bias) / (float)bias;
+    float       n[3] = {u, v, 1.0f - fabsf(u) - fabsf(v)};
+    if (n[2] < 0.0f)
+    {
+        const float fold_u = (1.0f - fabsf(v)) * (u >= 0.0f ? 1.0f : -1.0f);
+        n[1]               = (1.0f - fabsf(u)) * (v >= 0.0f ? 1.0f : -1.0f);
+        n[0]               = fold_u;
+    }
+    const float length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (u32 a = 0; a < 3; a++)
+    {
+        out[a] = n[a] / length;
+    }
+}
+
+// One level of detail while building: its index buffer and, once clustered, its meshlet range.
+struct LodBuild
+{
+    u32*   indices;
+    size_t index_count;
+    float  error;
+    size_t meshlet_begin, meshlet_end;
+    u32    cluster_count, triangle_count; // after snapping
+};
+
+// Appends simplified index buffers to lods[0] (the full mesh), each about lod_ratio of the previous one's
+// triangles. Always simplified from LOD0, so the error is measured against the original surface.
+static Result build_lod_chain(ArenaAllocator<>& arena, const SourceCorners& source, size_t vertex_count,
+                              const GltfImportSettings& settings, LodBuild* lods, u32& lod_count)
+{
+    const size_t max_triangles = settings.max_cluster_triangles;
+    if (settings.max_lods <= 1u || lods[0].index_count / 3 <= max_triangles)
+    {
+        return Result::ok;
+    }
+
+    // normal xyz, uv
+    float* attributes = arena_push<float>(arena, vertex_count * 5);
+    if (!attributes)
+    {
+        return Result::out_of_memory;
+    }
+    for (size_t v = 0; v < vertex_count; v++)
+    {
+        float* a = &attributes[v * 5];
+        oct_decode(source.data[v].normal, 16, a);
+        a[3] = source.uv_min.x + (float)(source.data[v].uv & 0xFFFFu) * source.uv_scale.x;
+        a[4] = source.uv_min.y + (float)(source.data[v].uv >> 16) * source.uv_scale.y;
+    }
+    const float weights[5] = {lod_normal_weight, lod_normal_weight, lod_normal_weight, lod_uv_weight, lod_uv_weight};
+
+    while (lod_count < settings.max_lods && lods[lod_count - 1].index_count / 3 > max_triangles)
+    {
+        const LodBuild& previous = lods[lod_count - 1];
+        const size_t    mark     = arena.buffer_offset;
+        u32*            indices  = arena_push<u32>(arena, lods[0].index_count);
+        if (!indices)
+        {
+            return Result::out_of_memory;
+        }
+        const size_t target = (size_t)((double)(previous.index_count / 3) * settings.lod_ratio) * 3;
+        float        error  = 0.0f;
+        const size_t count  = meshopt_simplifyWithAttributes(
+            indices, lods[0].indices, lods[0].index_count, source.data[0].position, vertex_count, sizeof(SourceCorner),
+            attributes, sizeof(float) * 5, weights, 5, nullptr, target, FLT_MAX,
+            meshopt_SimplifyErrorAbsolute | meshopt_SimplifyPrune, &error);
+        if (count == 0 || (double)count > (double)previous.index_count * lod_min_reduction)
+        {
+            arena.buffer_offset = mark;
+            break;
+        }
+        arena.buffer_offset = (size_t)((u8*)(indices + count) - arena.buffer); // keep only what was written
+        meshopt_optimizeVertexCache(indices, indices, count, vertex_count);
+        lods[lod_count++] = {.indices = indices, .index_count = count, .error = error > previous.error ? error : previous.error};
+    }
+    return Result::ok;
+}
+
+// Stage 2: dedup, simplify into LODs, cluster, quantize and pack into a compact blob at the arena mark.
 static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& source, const GltfImportSettings& settings,
                              size_t mark, ClusterMesh& out_mesh)
 {
@@ -1224,14 +1313,29 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     }
     meshopt_optimizeVertexCache(indices, indices, index_count, vertex_count); // spatially coherent cluster order
 
+    // Simplified LODs use a subset of LOD0's vertices: shared grid, seams and bounds stay valid.
+    LodBuild lods[mesh_max_lods] = {};
+    u32      lod_count           = 1;
+    lods[0]                      = {.indices = indices, .index_count = index_count, .error = 0.0f};
+    Result result                = build_lod_chain(arena, source, vertex_count, settings, lods, lod_count);
+    if (result != Result::ok)
+    {
+        return result;
+    }
+
     const size_t max_vertices  = settings.max_cluster_vertices;
     const size_t max_triangles = settings.max_cluster_triangles;
     const size_t min_triangles = max_triangles / 3 > 0 ? max_triangles / 3 : 1;
 
-    const size_t     meshlet_bound     = meshopt_buildMeshletsBound(index_count, max_vertices, min_triangles);
+    size_t meshlet_bound = 0, lod_index_total = 0;
+    for (u32 l = 0; l < lod_count; l++)
+    {
+        meshlet_bound += meshopt_buildMeshletsBound(lods[l].index_count, max_vertices, min_triangles);
+        lod_index_total += lods[l].index_count;
+    }
     meshopt_Meshlet* meshlets          = arena_push<meshopt_Meshlet>(arena, meshlet_bound);
-    u32*             meshlet_vertices  = arena_push<u32>(arena, index_count);
-    u8*              meshlet_triangles = arena_push<u8>(arena, index_count);
+    u32*             meshlet_vertices  = arena_push<u32>(arena, lod_index_total);
+    u8*              meshlet_triangles = arena_push<u8>(arena, lod_index_total);
     i32*             grid              = arena_push<i32>(arena, vertex_count * 3);
     if (!meshlets || !meshlet_vertices || !meshlet_triangles || !grid)
     {
@@ -1239,11 +1343,26 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     }
 
     // Flex with split factor 2 keeps clusters spatially tight, which is what the per-cluster bounds are for.
-    const size_t meshlet_count = meshopt_buildMeshletsFlex(
-        meshlets, meshlet_vertices, meshlet_triangles, indices, index_count, corners[0].position, vertex_count,
-        sizeof(SourceCorner), max_vertices, min_triangles, max_triangles, settings.cone_weight, 2.0f);
+    // Each LOD writes its own region of the shared arrays (a LOD needs at most index_count entries in each).
+    size_t meshlet_count = 0, lod_index_base = 0;
+    for (u32 l = 0; l < lod_count; l++)
+    {
+        const size_t built = meshopt_buildMeshletsFlex(
+            &meshlets[meshlet_count], &meshlet_vertices[lod_index_base], &meshlet_triangles[lod_index_base], lods[l].indices,
+            lods[l].index_count, corners[0].position, vertex_count, sizeof(SourceCorner), max_vertices, min_triangles,
+            max_triangles, settings.cone_weight, 2.0f);
+        for (size_t k = meshlet_count; k < meshlet_count + built; k++)
+        {
+            meshlets[k].vertex_offset += (u32)lod_index_base;
+            meshlets[k].triangle_offset += (u32)lod_index_base;
+        }
+        lods[l].meshlet_begin = meshlet_count;
+        lods[l].meshlet_end   = meshlet_count + built;
+        meshlet_count += built;
+        lod_index_base += lods[l].index_count;
+    }
 
-    // Optimize each cluster and find the mesh-wide grid that fits every cluster's offsets in 21 bits.
+    // Optimize each cluster and find the mesh-wide grid that fits every cluster's offsets (all LODs) in 21 bits.
     int exponent = position_min_exponent;
     for (size_t k = 0; k < meshlet_count; k++)
     {
@@ -1276,14 +1395,13 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     const float step     = ldexpf(1.0f, exponent);
     const float inv_step = ldexpf(1.0f, -exponent);
 
-    // Snap clustered vertices onto the grid (exact: |q| < 2^24) and count the triangles that survive it.
+    // Snap clustered vertices onto the grid (exact: |q| < 2^24; vertices shared by LODs snap once, then stay put)
+    // and count the triangles that survive it.
     u32* kept_triangles = arena_push<u32>(arena, meshlet_count);
     if (!kept_triangles)
     {
         return Result::out_of_memory;
     }
-    u64 vertex_total = 0, triangle_total = 0;
-    u32 cluster_count = 0;
     for (size_t k = 0; k < meshlet_count; k++)
     {
         const meshopt_Meshlet& meshlet         = meshlets[k];
@@ -1308,21 +1426,48 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
             kept += collapsed(grid, local_vertices, &local_triangles[t * 3]) ? 0u : 1u;
         }
         kept_triangles[k] = kept;
-        if (kept > 0)
+    }
+
+    // Keep LODs while they have geometry and the totals fit the 24-bit cluster offsets. LOD0 must fit.
+    u64 vertex_total = 0, triangle_total = 0;
+    u32 cluster_count = 0, kept_lods = 0;
+    for (u32 l = 0; l < lod_count; l++)
+    {
+        u64 vertices = 0, triangles = 0;
+        u32 clusters = 0;
+        for (size_t k = lods[l].meshlet_begin; k < lods[l].meshlet_end; k++)
         {
-            vertex_total += meshlet.vertex_count;
-            triangle_total += kept;
-            cluster_count++;
+            if (kept_triangles[k] > 0)
+            {
+                vertices += meshlets[k].vertex_count;
+                triangles += kept_triangles[k];
+                clusters++;
+            }
         }
+        if (clusters == 0)
+        {
+            if (l == 0)
+            {
+                return Result::no_geometry;
+            }
+            break;
+        }
+        if (vertex_total + vertices > mesh_max_elements || triangle_total + triangles > mesh_max_elements)
+        {
+            if (l == 0)
+            {
+                return Result::unsupported;
+            }
+            break;
+        }
+        vertex_total += vertices;
+        triangle_total += triangles;
+        cluster_count += clusters;
+        lods[l].cluster_count  = clusters;
+        lods[l].triangle_count = (u32)triangles;
+        kept_lods++;
     }
-    if (cluster_count == 0)
-    {
-        return Result::no_geometry;
-    }
-    if (vertex_total > mesh_max_elements || triangle_total > mesh_max_elements) // 24-bit cluster offsets
-    {
-        return Result::unsupported;
-    }
+    lod_count = kept_lods;
 
     const size_t clusters_offset   = 0;
     const size_t triangles_offset  = round_to<size_t>(clusters_offset + sizeof(MeshCluster) * cluster_count, blob_alignment);
@@ -1348,84 +1493,89 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     float3 mesh_min = {FLT_MAX, FLT_MAX, FLT_MAX};
     float3 mesh_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     u32    cluster_index = 0, vertex_cursor = 0, triangle_cursor = 0;
-    for (size_t k = 0; k < meshlet_count; k++)
+    for (u32 l = 0; l < lod_count; l++)
     {
-        if (kept_triangles[k] == 0)
+        out_mesh.lods[l] = {.first_cluster = cluster_index, .error = lods[l].error};
+        for (size_t k = lods[l].meshlet_begin; k < lods[l].meshlet_end; k++)
         {
-            continue;
-        }
-        const meshopt_Meshlet& meshlet         = meshlets[k];
-        const u32*             local_vertices  = &meshlet_vertices[meshlet.vertex_offset];
-        const u8*              local_triangles = &meshlet_triangles[meshlet.triangle_offset];
-        MeshCluster&           cluster         = clusters[cluster_index];
-
-        i32 anchor[3] = {INT32_MAX, INT32_MAX, INT32_MAX};
-        i32 top[3]    = {INT32_MIN, INT32_MIN, INT32_MIN};
-        for (u32 i = 0; i < meshlet.vertex_count; i++)
-        {
-            for (u32 a = 0; a < 3; a++)
+            if (kept_triangles[k] == 0)
             {
-                const i32 q = grid[local_vertices[i] * 3 + a];
-                anchor[a]   = q < anchor[a] ? q : anchor[a];
-                top[a]      = q > top[a] ? q : top[a];
+                continue;
             }
-        }
-        // Exact box: both corners are grid points; the max corner is stored as a grid extent.
-        const float3 aabb_max = {(float)top[0] * step, (float)top[1] * step, (float)top[2] * step};
-        const u32    extent[3] = {(u32)(top[0] - anchor[0]), (u32)(top[1] - anchor[1]), (u32)(top[2] - anchor[2])};
-        assert(extent[0] < (1u << mesh_position_bits) && extent[1] < (1u << mesh_position_bits) &&
-               extent[2] < (1u << mesh_position_bits));
-        cluster.aabb_min = {(float)anchor[0] * step, (float)anchor[1] * step, (float)anchor[2] * step};
-        cluster.extent   = {.lo = extent[0] | extent[1] << 21, .hi = extent[1] >> 11 | extent[2] << 10};
+            const meshopt_Meshlet& meshlet         = meshlets[k];
+            const u32*             local_vertices  = &meshlet_vertices[meshlet.vertex_offset];
+            const u8*              local_triangles = &meshlet_triangles[meshlet.triangle_offset];
+            MeshCluster&           cluster         = clusters[cluster_index];
 
-        for (u32 i = 0; i < meshlet.vertex_count; i++)
-        {
-            const u32 v = local_vertices[i];
-            const u32 x = (u32)(grid[v * 3 + 0] - anchor[0]);
-            const u32 y = (u32)(grid[v * 3 + 1] - anchor[1]);
-            const u32 z = (u32)(grid[v * 3 + 2] - anchor[2]);
-
-            positions[vertex_cursor + i]  = {.lo = x | y << 21, .hi = y >> 11 | z << 10};
-            attributes[vertex_cursor + i] = {.normal = corners[v].normal, .tangent = corners[v].tangent, .uv = corners[v].uv};
-        }
-
-        u32 kept = 0;
-        for (u32 t = 0; t < meshlet.triangle_count; t++)
-        {
-            const u8* tri = &local_triangles[t * 3];
-            if (!collapsed(grid, local_vertices, tri))
+            i32 anchor[3] = {INT32_MAX, INT32_MAX, INT32_MAX};
+            i32 top[3]    = {INT32_MIN, INT32_MIN, INT32_MIN};
+            for (u32 i = 0; i < meshlet.vertex_count; i++)
             {
-                triangles[triangle_cursor + kept++] = (u32)tri[0] | (u32)tri[1] << 8 | (u32)tri[2] << 16;
+                for (u32 a = 0; a < 3; a++)
+                {
+                    const i32 q = grid[local_vertices[i] * 3 + a];
+                    anchor[a]   = q < anchor[a] ? q : anchor[a];
+                    top[a]      = q > top[a] ? q : top[a];
+                }
             }
+            // Exact box: both corners are grid points; the max corner is stored as a grid extent.
+            const float3 aabb_max = {(float)top[0] * step, (float)top[1] * step, (float)top[2] * step};
+            const u32    extent[3] = {(u32)(top[0] - anchor[0]), (u32)(top[1] - anchor[1]), (u32)(top[2] - anchor[2])};
+            assert(extent[0] < (1u << mesh_position_bits) && extent[1] < (1u << mesh_position_bits) &&
+                   extent[2] < (1u << mesh_position_bits));
+            cluster.aabb_min = {(float)anchor[0] * step, (float)anchor[1] * step, (float)anchor[2] * step};
+            cluster.extent   = {.lo = extent[0] | extent[1] << 21, .hi = extent[1] >> 11 | extent[2] << 10};
+
+            for (u32 i = 0; i < meshlet.vertex_count; i++)
+            {
+                const u32 v = local_vertices[i];
+                const u32 x = (u32)(grid[v * 3 + 0] - anchor[0]);
+                const u32 y = (u32)(grid[v * 3 + 1] - anchor[1]);
+                const u32 z = (u32)(grid[v * 3 + 2] - anchor[2]);
+
+                positions[vertex_cursor + i]  = {.lo = x | y << 21, .hi = y >> 11 | z << 10};
+                attributes[vertex_cursor + i] = {.normal = corners[v].normal, .tangent = corners[v].tangent, .uv = corners[v].uv};
+            }
+
+            u32 kept = 0;
+            for (u32 t = 0; t < meshlet.triangle_count; t++)
+            {
+                const u8* tri = &local_triangles[t * 3];
+                if (!collapsed(grid, local_vertices, tri))
+                {
+                    triangles[triangle_cursor + kept++] = (u32)tri[0] | (u32)tri[1] << 8 | (u32)tri[2] << 16;
+                }
+            }
+
+            // Cone from the snapped positions; zero-area clusters get a cone that never culls.
+            const meshopt_Bounds bounds = meshopt_computeMeshletBounds(local_vertices, local_triangles, meshlet.triangle_count,
+                                                                       corners[0].position, vertex_count, sizeof(SourceCorner));
+            cluster.cone = bounds.radius > 0.0f ? (u32)(u8)bounds.cone_axis_s8[0] | (u32)(u8)bounds.cone_axis_s8[1] << 8 |
+                                                      (u32)(u8)bounds.cone_axis_s8[2] << 16 | (u32)(u8)bounds.cone_cutoff_s8 << 24
+                                                : mesh_no_cone;
+
+            cluster.vertices  = vertex_cursor | (meshlet.vertex_count - 1) << 24;
+            cluster.triangles = triangle_cursor | (kept - 1) << 24;
+
+            // The shader's cluster sphere (box centre, half diagonal), radius rounded up, as input for the mesh sphere.
+            const float3 centre = {(cluster.aabb_min.x + aabb_max.x) * 0.5f, (cluster.aabb_min.y + aabb_max.y) * 0.5f,
+                                   (cluster.aabb_min.z + aabb_max.z) * 0.5f};
+            const double size[3] = {(double)aabb_max.x - cluster.aabb_min.x, (double)aabb_max.y - cluster.aabb_min.y,
+                                    (double)aabb_max.z - cluster.aabb_min.z};
+            spheres[cluster_index] = {centre.x, centre.y, centre.z, nextafterf((float)(0.5 * sqrt(dot(size, size))), INFINITY)};
+
+            mesh_min = {fminf(mesh_min.x, cluster.aabb_min.x), fminf(mesh_min.y, cluster.aabb_min.y), fminf(mesh_min.z, cluster.aabb_min.z)};
+            mesh_max = {fmaxf(mesh_max.x, aabb_max.x), fmaxf(mesh_max.y, aabb_max.y), fmaxf(mesh_max.z, aabb_max.z)};
+
+            vertex_cursor += meshlet.vertex_count;
+            triangle_cursor += kept;
+            cluster_index++;
         }
-
-        // Cone from the snapped positions; zero-area clusters get a cone that never culls.
-        const meshopt_Bounds bounds = meshopt_computeMeshletBounds(local_vertices, local_triangles, meshlet.triangle_count,
-                                                                   corners[0].position, vertex_count, sizeof(SourceCorner));
-        cluster.cone = bounds.radius > 0.0f ? (u32)(u8)bounds.cone_axis_s8[0] | (u32)(u8)bounds.cone_axis_s8[1] << 8 |
-                                                  (u32)(u8)bounds.cone_axis_s8[2] << 16 | (u32)(u8)bounds.cone_cutoff_s8 << 24
-                                            : mesh_no_cone;
-
-        cluster.vertices  = vertex_cursor | (meshlet.vertex_count - 1) << 24;
-        cluster.triangles = triangle_cursor | (kept - 1) << 24;
-
-        // The shader's cluster sphere (box centre, half diagonal), radius rounded up, as input for the mesh sphere.
-        const float3 centre = {(cluster.aabb_min.x + aabb_max.x) * 0.5f, (cluster.aabb_min.y + aabb_max.y) * 0.5f,
-                               (cluster.aabb_min.z + aabb_max.z) * 0.5f};
-        const double size[3] = {(double)aabb_max.x - cluster.aabb_min.x, (double)aabb_max.y - cluster.aabb_min.y,
-                                (double)aabb_max.z - cluster.aabb_min.z};
-        spheres[cluster_index] = {centre.x, centre.y, centre.z, nextafterf((float)(0.5 * sqrt(dot(size, size))), INFINITY)};
-
-        mesh_min = {fminf(mesh_min.x, cluster.aabb_min.x), fminf(mesh_min.y, cluster.aabb_min.y), fminf(mesh_min.z, cluster.aabb_min.z)};
-        mesh_max = {fmaxf(mesh_max.x, aabb_max.x), fmaxf(mesh_max.y, aabb_max.y), fmaxf(mesh_max.z, aabb_max.z)};
-
-        vertex_cursor += meshlet.vertex_count;
-        triangle_cursor += kept;
-        cluster_index++;
     }
     assert(cluster_index == cluster_count && vertex_cursor == vertex_total && triangle_cursor == triangle_total);
 
-    // meshopt's centre, but the radius recomputed in double: its float updates can miss far from the origin.
+    // Spheres of every LOD's clusters: one bound for all of them. meshopt's centre, but the radius recomputed in
+    // double: its float updates can miss far from the origin.
     const meshopt_Bounds mesh_sphere =
         meshopt_computeSphereBounds(&spheres[0].x, cluster_count, sizeof(float4), &spheres[0].w, sizeof(float4));
     double mesh_radius = 0.0;
@@ -1437,8 +1587,11 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     }
 
 #if !defined(NDEBUG)
-    validate_round_trip(arena, corners, grid, indices, index_count, clusters, cluster_count, triangles, positions, attributes,
-                        (u32)triangle_total, inv_step);
+    for (u32 l = 0; l < lod_count; l++)
+    {
+        validate_round_trip(arena, corners, grid, lods[l].indices, lods[l].index_count, &clusters[out_mesh.lods[l].first_cluster],
+                            lods[l].cluster_count, triangles, positions, attributes, lods[l].triangle_count, inv_step);
+    }
 #endif
 
     // Compact: move the blob down to the mark, dropping all scratch below it.
@@ -1451,6 +1604,7 @@ static Result build_clusters(ArenaAllocator<>& arena, const SourceCorners& sourc
     out_mesh.triangles  = {.data = (u32*)(dst + triangles_offset), .num_elements = (u32)triangle_total};
     out_mesh.positions  = {.data = (MeshPosition*)(dst + positions_offset), .num_elements = (u32)vertex_total};
     out_mesh.attributes = {.data = (MeshAttribute*)(dst + attributes_offset), .num_elements = (u32)vertex_total};
+    out_mesh.lod_count  = lod_count;
     out_mesh.aabb_min   = mesh_min;
     out_mesh.aabb_max   = mesh_max;
     out_mesh.sphere     = {mesh_sphere.center[0], mesh_sphere.center[1], mesh_sphere.center[2],
@@ -1470,6 +1624,8 @@ GltfImportResult import_gltf(ArenaAllocator<>& arena, const char* filepath, Clus
     assert(settings.max_cluster_vertices >= 3u && settings.max_cluster_vertices <= cluster_max_vertices);
     assert(settings.max_cluster_triangles >= 1u && settings.max_cluster_triangles <= cluster_max_triangles);
     assert(settings.cone_weight >= 0.0f && settings.cone_weight <= 1.0f);
+    assert(settings.max_lods >= 1u && settings.max_lods <= mesh_max_lods);
+    assert(settings.lod_ratio > 0.0f && settings.lod_ratio < 1.0f);
 
     const size_t mark = arena.buffer_offset;
     out_mesh          = {};

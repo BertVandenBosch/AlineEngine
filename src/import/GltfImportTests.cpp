@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS // plain fopen for the crafted test files
 
 #include "import/GltfImport.hpp"
+#include "gfx/MeshLod.hpp"
 
 #include <math.h>
 #include <stdio.h>
@@ -102,6 +103,22 @@ static void triangle_positions(const ClusterMesh& mesh, const MeshCluster& clust
     }
 }
 
+// Cluster range [first, end) of a LOD.
+static u32 lod_end(const ClusterMesh& mesh, u32 lod)
+{
+    return lod + 1u < mesh.lod_count ? mesh.lods[lod + 1u].first_cluster : mesh.clusters.num_elements;
+}
+
+static u32 lod_triangle_count(const ClusterMesh& mesh, u32 lod)
+{
+    u32 count = 0;
+    for (u32 k = mesh.lods[lod].first_cluster; k < lod_end(mesh, lod); k++)
+    {
+        count += triangle_count_of(mesh.clusters[k]);
+    }
+    return count;
+}
+
 static bool all_zero(const u8* begin, const u8* end)
 {
     for (const u8* p = begin; p < end; p++)
@@ -199,6 +216,21 @@ static void validate_cluster_mesh(const ClusterMesh& mesh, const ArenaAllocator<
         assert(sqrt(dot3(to_mesh, to_mesh)) + bounds.radius <= mesh.sphere.w);
     }
     assert(vertex_cursor == mesh.positions.num_elements && triangle_cursor == mesh.triangles.num_elements);
+
+    // LODs: LOD0 starts the cluster array exactly, then non-empty ranges with fewer triangles and no smaller error.
+    assert(mesh.lod_count >= 1u && mesh.lod_count <= settings.max_lods);
+    assert(mesh.lods[0].first_cluster == 0u && mesh.lods[0].error == 0.0f);
+    for (u32 lod = 1; lod < mesh.lod_count; lod++)
+    {
+        assert(mesh.lods[lod].first_cluster > mesh.lods[lod - 1].first_cluster);
+        assert(mesh.lods[lod].first_cluster < mesh.clusters.num_elements);
+        assert(mesh.lods[lod].error >= mesh.lods[lod - 1].error && isfinite(mesh.lods[lod].error));
+        assert(lod_triangle_count(mesh, lod) < lod_triangle_count(mesh, lod - 1));
+    }
+    for (u32 lod = mesh.lod_count; lod < mesh_max_lods; lod++)
+    {
+        assert(mesh.lods[lod].first_cluster == 0u && mesh.lods[lod].error == 0.0f);
+    }
 }
 
 // Every cluster the shader's s8 cone test culls must be entirely back-facing.
@@ -300,6 +332,45 @@ static void check_watertight(const ClusterMesh& mesh)
     assert(volume > 0.0);
 }
 
+// select_mesh_lod on a unit-radius mesh at the origin with LOD errors {0, 0.01, 0.1} and a 1 px threshold.
+static void run_lod_selection_tests()
+{
+    GpuMesh mesh   = {};
+    mesh.sphere    = {0.0f, 0.0f, 0.0f, 1.0f};
+    mesh.lod_count = 3u;
+    mesh.lods[1]   = {.first_cluster = 1u, .error = 0.01f};
+    mesh.lods[2]   = {.first_cluster = 2u, .error = 0.1f};
+
+    float3x4 identity = {};
+    for (u32 r = 0; r < 3; r++)
+    {
+        identity.rows[r][r] = 1.0f;
+    }
+    float3x4 scaled = identity;
+    for (u32 r = 0; r < 3; r++)
+    {
+        scaled.rows[r][r] = 2.0f;
+    }
+
+    // Projected error (px) = error * scale * projection_scale / (camera distance - radius * scale).
+    const auto at = [](float distance) { return LodView{.camera_position = {0.0f, 0.0f, distance}, .projection_scale = 1000.0f, .threshold_px = 1.0f}; };
+    assert(select_mesh_lod(mesh, identity, at(0.5f)) == 0u);   // inside the sphere
+    assert(select_mesh_lod(mesh, identity, at(5.0f)) == 0u);   // LOD1 would be 2.5 px
+    assert(select_mesh_lod(mesh, identity, at(20.0f)) == 1u);  // LOD1 0.53 px, LOD2 5.3 px
+    assert(select_mesh_lod(mesh, identity, at(200.0f)) == 2u); // LOD2 0.5 px
+    assert(select_mesh_lod(mesh, scaled, at(20.0f)) == 0u);    // 2x scale: LOD1 1.1 px
+    assert(select_mesh_lod(mesh, scaled, at(200.0f)) == 1u);   // LOD2 1.01 px, LOD1 0.1 px
+
+    // Translation moves the sphere with the instance.
+    float3x4 moved      = identity;
+    moved.rows[2][3]    = 180.0f; // sphere now 20 units from a camera at z = 200
+    assert(select_mesh_lod(mesh, moved, at(200.0f)) == 1u);
+
+    // A single-LOD mesh always gives 0.
+    mesh.lod_count = 1u;
+    assert(select_mesh_lod(mesh, identity, at(1e6f)) == 0u);
+}
+
 static void print_stats(const char* name, const ClusterMesh& mesh)
 {
     const double triangles = mesh.triangles.num_elements;
@@ -308,6 +379,15 @@ static void print_stats(const char* name, const ClusterMesh& mesh)
            mesh.clusters.num_elements, mesh.triangles.num_elements, mesh.positions.num_elements, mesh.unique_vertex_count,
            (double)mesh.positions.num_elements / mesh.unique_vertex_count, mesh.blob.num_elements / triangles,
            depth_only / triangles, mesh.position_exponent);
+    if (mesh.lod_count > 1u)
+    {
+        printf("  %-28s", "");
+        for (u32 lod = 0; lod < mesh.lod_count; lod++)
+        {
+            printf(" LOD%u %u tris (err %.2g)", lod, lod_triangle_count(mesh, lod), (double)mesh.lods[lod].error);
+        }
+        printf("\n");
+    }
 }
 
 // Imports, validates and checks that a second import is byte-identical.
@@ -588,12 +668,24 @@ void run_gltf_import_tests()
     for (const GltfImportSettings& settings : pirate_settings)
     {
         import_ok(arena, pirate, mesh, settings);
-        const u32 minimum = (mesh.triangles.num_elements + settings.max_cluster_triangles - 1) / settings.max_cluster_triangles;
-        assert(mesh.clusters.num_elements >= minimum && mesh.triangles.num_elements <= 5010u);
+        const u32 lod0_triangles = lod_triangle_count(mesh, 0);
+        const u32 minimum        = (lod0_triangles + settings.max_cluster_triangles - 1) / settings.max_cluster_triangles;
+        assert(lod_end(mesh, 0) >= minimum && lod0_triangles <= 5010u);
+        assert(mesh.lod_count >= 2u);
         const u32 culled = check_cone_culling(mesh);
         assert(culled > 0u); // the soundness check above is vacuous if nothing is ever culled
         printf("    cone test culled %u cluster views\n", culled);
     }
+
+    // LODs off: a single LOD, identical to LOD0 of the default import.
+    {
+        import_ok(arena, pirate, mesh);
+        const u32 lod0_triangles = lod_triangle_count(mesh, 0), lod0_clusters = lod_end(mesh, 0);
+        import_ok(arena, pirate, mesh, {.max_lods = 1u});
+        assert(mesh.lod_count == 1u && mesh.triangles.num_elements == lod0_triangles &&
+               mesh.clusters.num_elements == lod0_clusters);
+    }
+    run_lod_selection_tests();
 
     // Failures leave the arena untouched.
     arena.free_all();

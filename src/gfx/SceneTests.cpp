@@ -97,9 +97,10 @@ void submit_and_wait(TestGpu& state, Scene* scene, gpu::CommandBuffer* commands)
 }
 
 // One frame: `changes` edits the scene, the scatter is recorded, the persistent arrays are copied back and
-// compared. Every frame is waited on, so frame f - 2 has completed before scene_begin_frame(f).
+// compared (unless `verify` is off: changes deferred by a full upload ring make the arrays lag behind).
+// Every frame is waited on, so frame f - 2 has completed before scene_begin_frame(f).
 template <typename Changes>
-void run_frame(TestGpu& state, Scene* scene, u64 frame, const Expected& expected, Changes&& changes)
+void run_frame(TestGpu& state, Scene* scene, u64 frame, const Expected& expected, Changes&& changes, bool verify = true)
 {
     gpu::CommandBuffer* commands = begin(state);
     scene_begin_frame(scene, frame);
@@ -114,6 +115,10 @@ void run_frame(TestGpu& state, Scene* scene, u64 frame, const Expected& expected
     gpu::copy_memory(commands, {.gpu = view.static_meshes, .size = statics}, {.gpu = readback + transforms, .size = statics});
     submit_and_wait(state, scene, commands);
 
+    if (!verify)
+    {
+        return;
+    }
     const float3x4*      actual_transforms = (const float3x4*)state.readback.range.cpu;
     const GpuStaticMesh* actual_statics    = (const GpuStaticMesh*)(state.readback.range.cpu + transforms);
     for (u32 i = 0; i < test_transforms; i++)
@@ -194,11 +199,17 @@ void run_scene_tests()
 
     const gpu::ByteSpan shader = load_shader(arena, ALINE_SHADER_DIR "/scene_scatter" ALINE_SHADER_EXTENSION);
     assert(shader.data && "scene_scatter shader missing");
-    Scene* scene = scene_create(arena, state.device,
-                                {.max_transforms = test_transforms, .max_static_meshes = test_static_meshes,
-                                 .max_meshes = test_meshes, .mesh_blob_bytes = MB(1), .frames_in_flight = 2u},
-                                shader);
-    assert(scene);
+    const auto create_scene = [&](u64 upload_ring_bytes)
+    {
+        Scene* created = scene_create(arena, state.device,
+                                      {.max_transforms = test_transforms, .max_static_meshes = test_static_meshes,
+                                       .max_meshes = test_meshes, .mesh_blob_bytes = MB(1), .frames_in_flight = 2u,
+                                       .upload_ring_bytes = upload_ring_bytes},
+                                      shader);
+        assert(created);
+        return created;
+    };
+    Scene* scene = create_scene(KB(64));
 
     static Expected expected = {};
     static u8       cube_blob[KB(64)], pirate_blob[KB(256)];
@@ -275,9 +286,108 @@ void run_scene_tests()
         assert(cube_again.index == pirate_mesh.index && cube_again.gen != pirate_mesh.gen); // retired slot reused
     });
     check_mesh(state, scene, cube_again, cube, cube_blob);
-
+    assert(scene_upload_stats(scene).deferred_frames == 0u);
     gpu::wait_idle(state.device);
     scene_destroy(scene);
+
+    // Upload ring deferral. A 512-byte ring holds one block of at most 8 transform changes, and with two frames in
+    // flight the previous frame's block is still held: what doesn't fit stays staged and goes out later.
+    {
+        Scene*          ring     = create_scene(512u);
+        static Expected deferral_expected = {};
+        TransformHandle handles[16];
+
+        // Frame 0: 16 new transforms, the first 8 go out.
+        run_frame(state, ring, 0u, deferral_expected, [&]
+        {
+            for (u32 i = 0; i < 16u; i++)
+            {
+                handles[i] = create_transform(ring, deferral_expected, 10.0f + (float)i);
+            }
+        }, false);
+        assert(scene_upload_stats(ring).pending_transforms == 8u && scene_upload_stats(ring).deferred_frames == 1u);
+
+        // Frame 1: frame 0's block fills the ring, nothing goes out. Writing a deferred transform updates its staged
+        // entry; writing one that already went out stages a new entry.
+        run_frame(state, ring, 1u, deferral_expected, [&]
+        {
+            set_transform(ring, deferral_expected, handles[15], 40.0f);
+            set_transform(ring, deferral_expected, handles[0], 41.0f);
+        }, false);
+        assert(scene_upload_stats(ring).pending_transforms == 9u && scene_upload_stats(ring).deferred_frames == 2u);
+
+        // Frame 2: frame 0 retired, 8 of the 9 fit. Frame 3: frame 2 holds the ring. Frame 4: the last one goes out.
+        run_frame(state, ring, 2u, deferral_expected, [] {}, false);
+        assert(scene_upload_stats(ring).pending_transforms == 1u && scene_upload_stats(ring).deferred_frames == 3u);
+        run_frame(state, ring, 3u, deferral_expected, [] {}, false);
+        assert(scene_upload_stats(ring).pending_transforms == 1u && scene_upload_stats(ring).deferred_frames == 4u);
+        run_frame(state, ring, 4u, deferral_expected, [] {});
+        const SceneUploadStats stats = scene_upload_stats(ring);
+        assert(stats.pending_transforms == 0u && stats.deferred_frames == 4u);
+        assert(stats.ring_peak_bytes > 0u && stats.ring_peak_bytes <= stats.ring_capacity);
+        run_frame(state, ring, 5u, deferral_expected, [] {});
+
+        gpu::wait_idle(state.device);
+        scene_destroy(ring);
+    }
+
+    // A removed mesh stays reserved while instance changes made before its removal are still deferred:
+    // the GPU may read it until they are scattered and their frame has completed.
+    {
+        Scene*          ring     = create_scene(512u);
+        static Expected retire_expected = {};
+        MeshHandle      removed = {}, kept = {}, reused = {};
+        const auto      add_cube = [&]
+        {
+            cube                    = import_sample(scratch, "src/tinygltf/models/Cube/Cube.gltf", cube_blob, sizeof(cube_blob));
+            const MeshHandle handle = scene_add_mesh(ring, cube);
+            scratch.free_all();
+            assert(handle.valid());
+            return handle;
+        };
+
+        // Frame 0: 40 instances of a mesh are created and destroyed, then the mesh is removed. 22 of the 40
+        // destroy records fit (static meshes go first), the other 18 and the transform are deferred.
+        run_frame(state, ring, 0u, retire_expected, [&]
+        {
+            removed                     = add_cube();
+            const TransformHandle t     = create_transform(ring, retire_expected, 7.0f);
+            StaticMeshHandle      s[40] = {};
+            for (StaticMeshHandle& handle : s)
+            {
+                handle = scene_create_static_mesh(ring, removed, t);
+                assert(handle.valid());
+            }
+            for (const StaticMeshHandle handle : s)
+            {
+                scene_destroy_static_mesh(ring, handle); // retire_expected stays the empty record
+            }
+            scene_remove_mesh(ring, removed);
+        }, false);
+        assert(scene_upload_stats(ring).pending_static_meshes == 18u && scene_upload_stats(ring).pending_transforms == 1u);
+        run_frame(state, ring, 1u, retire_expected, [] {}, false);
+
+        // Frame 2: without deferral the mesh would retire here; its last destroy records only go out now.
+        run_frame(state, ring, 2u, retire_expected, [&]
+        {
+            kept = add_cube();
+            assert(kept.index != removed.index);
+        });
+        assert(scene_upload_stats(ring).pending_static_meshes == 0u && scene_upload_stats(ring).pending_transforms == 0u);
+        run_frame(state, ring, 3u, retire_expected, [] {});
+
+        // Frame 4: frame 2 has completed, the slot is free again.
+        run_frame(state, ring, 4u, retire_expected, [&]
+        {
+            reused = add_cube();
+            assert(reused.index == removed.index && reused.gen != removed.gen);
+        });
+        check_mesh(state, ring, reused, cube, cube_blob);
+
+        gpu::wait_idle(state.device);
+        scene_destroy(ring);
+    }
+
     gpu::destroy_gpu_heap(state.readback);
     gpu::destroy_command_pool(state.pool);
     gpu::destroy_timeline_semaphore(state.timeline);

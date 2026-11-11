@@ -21,6 +21,8 @@ struct GltfImportSettings
     u32   max_cluster_triangles = cluster_max_triangles; // 1..cluster_max_triangles
     float cone_weight           = 0.25f;                 // 0..1, trades cluster size for cone culling
     bool  recompute_tangents    = false;                 // ignore authored TANGENT, regenerate from TEXCOORD_0
+    u32   max_lods              = mesh_max_lods;         // 1..mesh_max_lods; 1 = no simplified LODs
+    float lod_ratio             = 0.25f;                 // 0..1 exclusive, target triangle fraction of each next LOD
 };
 
 /*
@@ -45,6 +47,11 @@ struct ClusterMesh
     float2 uv_min;
     float2 uv_scale;
 
+    // Discrete LODs over `clusters`, LOD0 first. The chain stops at max_lods, once a LOD fits in one cluster,
+    // or when simplification stalls.
+    u32     lod_count;
+    MeshLod lods[mesh_max_lods];
+
     u32 unique_vertex_count;   // stats: vertices before per-cluster duplication
     u32 source_triangle_count; // stats: triangles before degenerate/duplicate filtering
 };
@@ -52,7 +59,8 @@ struct ClusterMesh
 /*
  * Imports every mesh instance of the default scene, flattened into one
  * object-space mesh (node transforms and default morph weights baked in,
- * skinned meshes in bind pose), and builds GPU-ready clusters.
+ * skinned meshes in bind pose), simplifies it into a LOD chain and builds
+ * GPU-ready clusters for every LOD.
  * The importer's scratch memory comes from the arena too: on `ok` the arena
  * holds exactly the blob above its previous offset; on failure the offset is
  * restored and out_mesh is cleared. tinygltf and meshoptimizer still use the
@@ -66,7 +74,7 @@ inline GpuMesh make_gpu_mesh(const ClusterMesh& mesh, byte* gpu_blob)
 {
     auto rebase = [&](const void* cpu) { return gpu_blob + ((const u8*)cpu - mesh.blob.data); };
 
-    return {
+    GpuMesh record = {
         .clusters      = (MeshCluster*)rebase(mesh.clusters.data),
         .triangles     = (uint32*)rebase(mesh.triangles.data),
         .positions     = (MeshPosition*)rebase(mesh.positions.data),
@@ -78,5 +86,11 @@ inline GpuMesh make_gpu_mesh(const ClusterMesh& mesh, byte* gpu_blob)
         .sphere        = mesh.sphere,
         .uv_min        = mesh.uv_min,
         .uv_scale      = mesh.uv_scale,
+        .lod_count     = mesh.lod_count,
     };
+    for (u32 i = 0; i < mesh.lod_count; i++)
+    {
+        record.lods[i] = mesh.lods[i];
+    }
+    return record;
 }

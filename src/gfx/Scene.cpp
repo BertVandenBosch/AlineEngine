@@ -14,58 +14,86 @@ struct StaticMeshRecord
 struct MeshSlot
 {
     gpu::HeapAllocation<byte> blob;
-    u64                       retire_frame; // frame of scene_remove_mesh
-    bool                      removed;
+    // Once retire_scheduled: the frame whose scatter carried the last instance change made before the removal.
+    u64  retire_frame;
+    bool removed;
+    bool retire_scheduled;
 };
 
-// Byte layout of one frame's upload slice (all offsets 16-byte aligned).
-struct SliceLayout
+// One frame's block in the upload ring, all offsets 16-byte aligned:
+// SceneScatterRoot | static mesh indices | static mesh values | transform indices | transform values
+struct BlockLayout
 {
-    u64 transform_indices;
-    u64 transform_values;
     u64 static_mesh_indices;
     u64 static_mesh_values;
+    u64 transform_indices;
+    u64 transform_values;
     u64 size;
 };
 
-static SliceLayout slice_layout(const SceneDesc& desc)
+static_assert(sizeof(GpuStaticMesh) % 16 == 0 && sizeof(float3x4) % 16 == 0, "value arrays keep 16-byte alignment");
+
+static u64 stream_bytes(u32 count, u64 value_size) { return round_to<u64>(sizeof(u32) * count, 16) + value_size * count; }
+
+static BlockLayout block_layout(u32 static_mesh_count, u32 transform_count)
 {
-    SliceLayout layout;
-    layout.transform_indices   = sizeof(SceneScatterRoot);
-    layout.transform_values    = round_to<u64>(layout.transform_indices + sizeof(u32) * desc.max_transforms, 16);
-    layout.static_mesh_indices = round_to<u64>(layout.transform_values + sizeof(float3x4) * desc.max_transforms, 16);
-    layout.static_mesh_values  = round_to<u64>(layout.static_mesh_indices + sizeof(u32) * desc.max_static_meshes, 16);
-    layout.size                = round_to<u64>(layout.static_mesh_values + sizeof(GpuStaticMesh) * desc.max_static_meshes, 16);
+    BlockLayout layout;
+    layout.static_mesh_indices = sizeof(SceneScatterRoot);
+    layout.static_mesh_values  = layout.static_mesh_indices + round_to<u64>(sizeof(u32) * static_mesh_count, 16);
+    layout.transform_indices   = layout.static_mesh_values + sizeof(GpuStaticMesh) * static_mesh_count;
+    layout.transform_values    = layout.transform_indices + round_to<u64>(sizeof(u32) * transform_count, 16);
+    layout.size                = layout.transform_values + sizeof(float3x4) * transform_count;
     return layout;
+}
+
+// Largest count <= total whose stream fits in `bytes`.
+static u32 fit_count(u32 total, u64 bytes, u64 value_size)
+{
+    if (stream_bytes(total, value_size) <= bytes)
+    {
+        return total;
+    }
+    // stream_bytes(n) <= (4 + value_size) * n + 12: start from that bound, then take up its slack.
+    u32 count = bytes > 12u ? (u32)((bytes - 12u) / (sizeof(u32) + value_size)) : 0u;
+    while (count < total && stream_bytes(count + 1u, value_size) <= bytes)
+    {
+        count++;
+    }
+    return count;
 }
 
 struct Scene
 {
     Scene(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc, gpu::GpuHeap scene_heap,
-          gpu::GpuHeap blob_heap, gpu::GpuHeap upload_heap, gpu::PSO* scatter_pso)
-        : desc(desc), slice(slice_layout(desc)), device(device), scene_heap(scene_heap), blob_heap(blob_heap),
-          upload_heap(upload_heap), scatter_pso(scatter_pso), blobs(blob_heap.range, desc.max_meshes), uploads(device),
+          gpu::GpuHeap blob_heap, gpu::GpuHeap upload_heap, u64 ring_capacity, gpu::PSO* scatter_pso)
+        : desc(desc), device(device), scene_heap(scene_heap), blob_heap(blob_heap), upload_heap(upload_heap),
+          scatter_pso(scatter_pso), blobs(blob_heap.range, desc.max_meshes), uploads(device),
           transforms(arena, desc.max_transforms), static_meshes(arena, desc.max_static_meshes), meshes(arena, desc.max_meshes),
           transform_pending(arena, desc.max_transforms), static_mesh_pending(arena, desc.max_static_meshes),
-          touched_transforms(arena, desc.max_transforms), touched_static_meshes(arena, desc.max_static_meshes),
-          retiring_meshes(arena, desc.max_meshes)
+          staged_transform_indices(arena, desc.max_transforms), staged_transform_values(arena, desc.max_transforms),
+          staged_static_mesh_indices(arena, desc.max_static_meshes), staged_static_mesh_values(arena, desc.max_static_meshes),
+          retiring_meshes(arena, desc.max_meshes), ring_capacity(ring_capacity), frame_ring_ends(arena, desc.frames_in_flight)
     {
         // Pools and lists are allocated at full capacity up front, so nothing ever regrows (the arena can't free).
         transform_pending.resize(desc.max_transforms);
         static_mesh_pending.resize(desc.max_static_meshes);
+        staged_transform_indices.resize(desc.max_transforms);
+        staged_transform_values.resize(desc.max_transforms);
+        staged_static_mesh_indices.resize(desc.max_static_meshes);
+        staged_static_mesh_values.resize(desc.max_static_meshes);
+        frame_ring_ends.resize(desc.frames_in_flight);
 
         gpu_transforms    = (float3x4*)scene_heap.range.gpu;
         gpu_static_meshes = (GpuStaticMesh*)(scene_heap.range.gpu + round_to<u64>(sizeof(float3x4) * desc.max_transforms, 16));
         gpu_meshes        = (GpuMesh*)((byte*)gpu_static_meshes + round_to<u64>(sizeof(GpuStaticMesh) * desc.max_static_meshes, 16));
     }
 
-    SceneDesc   desc;
-    SliceLayout slice;
+    SceneDesc desc;
 
     gpu::Device*       device;
     gpu::GpuHeap       scene_heap;  // gpu_only: transforms | static meshes | meshes
     gpu::GpuHeap       blob_heap;   // gpu_only: mesh blobs
-    gpu::GpuHeap       upload_heap; // cpu_visible: one slice per frame in flight
+    gpu::GpuHeap       upload_heap; // cpu_visible: ring of per-frame scatter blocks
     gpu::PSO*          scatter_pso;
     gpu::HeapAllocator blobs;
     gpu::UploadQueue   uploads; // one-shot mesh uploads
@@ -78,37 +106,37 @@ struct Scene
     Pool<StaticMeshRecord, StaticMeshHandle>   static_meshes;
     Pool<MeshSlot, MeshHandle>                 meshes;
 
-    // Per slot: 1 + this frame's upload entry, or 0. Indexed by slot (not pool payload) so a slot destroyed and
-    // reused within one frame still maps to a single entry, and the scatter never writes an element twice.
-    Array<u32> transform_pending;
-    Array<u32> static_mesh_pending;
-    Array<u32> touched_transforms;
-    Array<u32> touched_static_meshes;
-    Array<MeshHandle> retiring_meshes;
+    // Changes not yet scattered, in write order; entries [0, *_count) are live. Per slot, *_pending holds
+    // 1 + the slot's staged entry, or 0. Indexed by slot (not pool payload) so a slot destroyed and reused
+    // before its change is scattered still maps to a single entry, and the scatter never writes an element twice.
+    Array<u32>           transform_pending;
+    Array<u32>           static_mesh_pending;
+    Array<u32>           staged_transform_indices;
+    Array<float3x4>      staged_transform_values;
+    Array<u32>           staged_static_mesh_indices;
+    Array<GpuStaticMesh> staged_static_mesh_values;
+    Array<MeshHandle>    retiring_meshes;
 
-    u64  frame_index      = 0;
-    u32  slice_index      = 0;
+    // Upload ring: head and tail are running byte counts (position = count % ring_capacity). Bytes in
+    // [tail, head) may still be read by frames in flight. frame_ring_ends[frame % frames_in_flight] is the
+    // head after that frame's block: once the frame completes, the tail can move up to it.
+    u64       ring_capacity;
+    u64       ring_head = 0;
+    u64       ring_tail = 0;
+    Array<u64> frame_ring_ends;
+
+    u64  frame_index       = 0;
     u32  transform_count   = 0;
     u32  static_mesh_count = 0;
-    bool recorded          = false; // changes after scene_record_updates would be lost
+    bool recorded          = false; // changes must wait for the next scene_begin_frame
+
+    u64 ring_peak_bytes = 0;
+    u64 deferred_frames = 0;
 
     bool               uploads_pending   = false;
     gpu::TimelinePoint upload_completion = {};
 };
 
-template <typename T>
-static T* slice_cpu(Scene* scene, u64 offset)
-{
-    return (T*)(scene->upload_heap.range.cpu + scene->slice.size * scene->slice_index + offset);
-}
-
-template <typename T>
-static T* slice_gpu(Scene* scene, u64 offset)
-{
-    return (T*)(scene->upload_heap.range.gpu + scene->slice.size * scene->slice_index + offset);
-}
-
-// Mapped memory is write-combined: only ever write it, whole elements at a time.
 static void write_transform(Scene* scene, u32 index, const float3x4& world)
 {
     assert(!scene->recorded && "scene changes must happen between scene_begin_frame and scene_record_updates");
@@ -116,10 +144,9 @@ static void write_transform(Scene* scene, u32 index, const float3x4& world)
     if (pending == 0u)
     {
         pending = ++scene->transform_count;
-        scene->touched_transforms.add(index);
-        slice_cpu<u32>(scene, scene->slice.transform_indices)[pending - 1u] = index;
+        scene->staged_transform_indices[pending - 1u] = index;
     }
-    slice_cpu<float3x4>(scene, scene->slice.transform_values)[pending - 1u] = world;
+    scene->staged_transform_values[pending - 1u] = world;
 }
 
 static void write_static_mesh(Scene* scene, u32 index, const GpuStaticMesh& record)
@@ -129,10 +156,30 @@ static void write_static_mesh(Scene* scene, u32 index, const GpuStaticMesh& reco
     if (pending == 0u)
     {
         pending = ++scene->static_mesh_count;
-        scene->touched_static_meshes.add(index);
-        slice_cpu<u32>(scene, scene->slice.static_mesh_indices)[pending - 1u] = index;
+        scene->staged_static_mesh_indices[pending - 1u] = index;
     }
-    slice_cpu<GpuStaticMesh>(scene, scene->slice.static_mesh_values)[pending - 1u] = record;
+    scene->staged_static_mesh_values[pending - 1u] = record;
+}
+
+// Drops the first `consumed` staged entries (just scattered) and moves the rest to the front, in order.
+template <typename T>
+static void consume_staged(Array<u32>& pending, Array<u32>& indices, Array<T>& values, u32& count, u32 consumed)
+{
+    for (u32 i = 0; i < consumed; i++)
+    {
+        pending[indices[i]] = 0u;
+    }
+    count -= consumed;
+    if (consumed == 0u || count == 0u)
+    {
+        return;
+    }
+    memmove(indices.data, indices.data + consumed, sizeof(u32) * count);
+    memmove(values.data, values.data + consumed, sizeof(T) * count);
+    for (u32 i = 0; i < count; i++)
+    {
+        pending[indices[i]] = i + 1u;
+    }
 }
 
 static const MeshSlot* live_mesh(Scene* scene, MeshHandle mesh)
@@ -146,21 +193,25 @@ Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDes
     assert(desc.max_transforms > 0u && desc.max_transforms <= TransformHandle::MAX_INDEX + 1u);
     assert(desc.max_static_meshes > 0u && desc.max_static_meshes <= StaticMeshHandle::MAX_INDEX + 1u);
     assert(desc.max_meshes > 0u && desc.max_meshes <= MeshHandle::MAX_INDEX + 1u && desc.frames_in_flight > 0u);
+    // Room for at least one block holding a single transform change.
+    assert(desc.upload_ring_bytes >= block_layout(0u, 1u).size);
 
     const u64 scene_bytes = round_to<u64>(sizeof(float3x4) * desc.max_transforms, 16) +
                             round_to<u64>(sizeof(GpuStaticMesh) * desc.max_static_meshes, 16) +
                             sizeof(GpuMesh) * desc.max_meshes;
+    const u64 ring_capacity = round_to<u64>(desc.upload_ring_bytes, 16);
 
     const gpu::GpuHeap scene_heap  = gpu::create_gpu_heap(device, scene_bytes, gpu::MemoryType::gpu_only);
     const gpu::GpuHeap blob_heap   = gpu::create_gpu_heap(device, desc.mesh_blob_bytes, gpu::MemoryType::gpu_only);
-    const gpu::GpuHeap upload_heap = gpu::create_gpu_heap(device, slice_layout(desc).size * desc.frames_in_flight);
+    const gpu::GpuHeap upload_heap = gpu::create_gpu_heap(device, ring_capacity);
     gpu::PSO* const    scatter_pso = gpu::create_compute_pso(
         device, {.code = scatter_shader, .entry_point = "computeMain", .threadgroup_size = {.x = scene_scatter_group_size, .y = 1, .z = 1}});
 
     Scene* scene = nullptr;
     if (scene_heap.owner && blob_heap.owner && upload_heap.owner && scatter_pso)
     {
-        const MemoryHandle memory = arena.create(&scene, arena, device, desc, scene_heap, blob_heap, upload_heap, scatter_pso);
+        const MemoryHandle memory =
+            arena.create(&scene, arena, device, desc, scene_heap, blob_heap, upload_heap, ring_capacity, scatter_pso);
         if (memory.is_valid() && !scene->uploads.valid())
         {
             scene->~Scene();
@@ -212,7 +263,8 @@ MeshHandle scene_add_mesh(Scene* scene, const ClusterMesh& mesh)
         return {};
     }
 
-    const MeshHandle handle = scene->meshes.create(MeshSlot{.blob = blob, .retire_frame = 0u, .removed = false});
+    const MeshHandle handle =
+        scene->meshes.create(MeshSlot{.blob = blob, .retire_frame = 0u, .removed = false, .retire_scheduled = false});
     const GpuMesh    record = make_gpu_mesh(mesh, blob.range.gpu);
     scene->uploads.upload_buffer({.gpu = blob.range.gpu, .size = mesh.blob.num_elements},
                                  gpu::ByteSpan(mesh.blob.data, mesh.blob.num_elements));
@@ -229,9 +281,10 @@ void scene_remove_mesh(Scene* scene, MeshHandle mesh)
     {
         return;
     }
-    // Frames in flight may still read the blob and the record slot: keep both until they retire.
-    slot->removed      = true;
-    slot->retire_frame = scene->frame_index;
+    // Frames in flight may still read the blob and the record slot, and instance changes that drop references
+    // to the mesh may still be staged: keep both until those changes are scattered and their frames retire.
+    slot->removed          = true;
+    slot->retire_scheduled = false;
     scene->retiring_meshes.add(mesh);
 }
 
@@ -296,28 +349,20 @@ void scene_destroy_static_mesh(Scene* scene, StaticMeshHandle static_mesh)
 void scene_begin_frame(Scene* scene, u64 frame_index)
 {
     scene->frame_index = frame_index;
-    scene->slice_index = (u32)(frame_index % scene->desc.frames_in_flight);
     scene->recorded    = false;
 
-    for (const u32 index : scene->touched_transforms)
-    {
-        scene->transform_pending[index] = 0u;
-    }
-    for (const u32 index : scene->touched_static_meshes)
-    {
-        scene->static_mesh_pending[index] = 0u;
-    }
-    scene->touched_transforms.clear();
-    scene->touched_static_meshes.clear();
-    scene->transform_count   = 0u;
-    scene->static_mesh_count = 0u;
+    // Frame (frame_index - frames_in_flight) has completed: its ring block, and everything before it, is free.
+    // (max: a skipped frame index leaves an older end in its slot.)
+    u64& ring_end   = scene->frame_ring_ends[(u32)(frame_index % scene->desc.frames_in_flight)];
+    scene->ring_tail = ring_end > scene->ring_tail ? ring_end : scene->ring_tail;
+    ring_end         = scene->ring_head;
 
-    // Frames up to frame_index - frames_in_flight have completed: their removed meshes can go.
+    // Removed meshes go once the frame that scattered their last instance changes has completed.
     for (u32 i = 0; i < scene->retiring_meshes.size();)
     {
         const MeshHandle handle = scene->retiring_meshes[i];
         const MeshSlot*  slot   = scene->meshes.get(handle);
-        if (frame_index >= slot->retire_frame + scene->desc.frames_in_flight)
+        if (slot->retire_scheduled && frame_index >= slot->retire_frame + scene->desc.frames_in_flight)
         {
             scene->blobs.free(slot->blob);
             scene->meshes.destroy(handle);
@@ -331,6 +376,88 @@ void scene_begin_frame(Scene* scene, u64 frame_index)
     }
 }
 
+// Copies as many staged changes as fit into a new ring block (static meshes first) and records their scatter.
+static void scatter_staged(Scene* scene, gpu::CommandBuffer* commands)
+{
+    const u64 capacity = scene->ring_capacity;
+    if (scene->ring_head == scene->ring_tail)
+    {
+        // Empty ring: restart at a capacity boundary so the whole ring is one contiguous span.
+        scene->ring_head = scene->ring_tail = (scene->ring_head + capacity - 1u) / capacity * capacity;
+    }
+
+    const u64 offset      = scene->ring_head % capacity;
+    const u64 free        = capacity - (scene->ring_head - scene->ring_tail);
+    const u64 end_space   = capacity - offset < free ? capacity - offset : free; // from the head to the ring's end
+    const u64 start_space = free - end_space;                                    // after wrapping to the start
+    const u64 full        = block_layout(scene->static_mesh_count, scene->transform_count).size;
+    const bool wrap       = full > end_space && (full <= start_space || start_space > end_space);
+    const u64 budget      = wrap ? start_space : end_space;
+
+    u32 static_meshes = 0u, transforms = 0u;
+    if (budget >= sizeof(SceneScatterRoot))
+    {
+        u64 remaining = budget - sizeof(SceneScatterRoot);
+        static_meshes = fit_count(scene->static_mesh_count, remaining, sizeof(GpuStaticMesh));
+        remaining -= stream_bytes(static_meshes, sizeof(GpuStaticMesh));
+        transforms = fit_count(scene->transform_count, remaining, sizeof(float3x4));
+    }
+    if (static_meshes < scene->static_mesh_count || transforms < scene->transform_count)
+    {
+        scene->deferred_frames++;
+    }
+    if (static_meshes == 0u && transforms == 0u)
+    {
+        return;
+    }
+
+    if (wrap)
+    {
+        scene->ring_head += capacity - offset;
+    }
+    const BlockLayout layout = block_layout(static_meshes, transforms);
+    byte* const       cpu    = scene->upload_heap.range.cpu + scene->ring_head % capacity;
+    byte* const       gpu    = scene->upload_heap.range.gpu + scene->ring_head % capacity;
+    scene->ring_head += layout.size;
+    scene->frame_ring_ends[(u32)(scene->frame_index % scene->desc.frames_in_flight)] = scene->ring_head;
+    const u64 in_use       = scene->ring_head - scene->ring_tail;
+    scene->ring_peak_bytes = in_use > scene->ring_peak_bytes ? in_use : scene->ring_peak_bytes;
+
+    // Mapped memory is write-combined: fill it sequentially and never read it back.
+    const SceneScatterRoot root = {
+        .transform_indices       = (u32*)(gpu + layout.transform_indices),
+        .transform_values        = (float3x4*)(gpu + layout.transform_values),
+        .transforms              = scene->gpu_transforms,
+        .static_mesh_indices     = (u32*)(gpu + layout.static_mesh_indices),
+        .static_mesh_values      = (GpuStaticMesh*)(gpu + layout.static_mesh_values),
+        .static_meshes           = scene->gpu_static_meshes,
+        .transform_count         = transforms,
+        .static_mesh_count       = static_meshes,
+        .root_alignment_padding0 = {0u, 0u},
+    };
+    memcpy(cpu, &root, sizeof(root));
+    memcpy(cpu + layout.static_mesh_indices, scene->staged_static_mesh_indices.data, sizeof(u32) * static_meshes);
+    memcpy(cpu + layout.static_mesh_values, scene->staged_static_mesh_values.data, sizeof(GpuStaticMesh) * static_meshes);
+    memcpy(cpu + layout.transform_indices, scene->staged_transform_indices.data, sizeof(u32) * transforms);
+    memcpy(cpu + layout.transform_values, scene->staged_transform_values.data, sizeof(float3x4) * transforms);
+
+    consume_staged(scene->static_mesh_pending, scene->staged_static_mesh_indices, scene->staged_static_mesh_values,
+                   scene->static_mesh_count, static_meshes);
+    consume_staged(scene->transform_pending, scene->staged_transform_indices, scene->staged_transform_values,
+                   scene->transform_count, transforms);
+
+    const u32 count = transforms > static_meshes ? transforms : static_meshes;
+
+    // Earlier readers of the scene arrays finish before the scatter overwrites them; later ones see the result.
+    gpu::barrier(commands, gpu::Stage::all_commands, gpu::Access::shader_read | gpu::Access::transfer_read,
+                 gpu::Stage::compute, gpu::Access::shader_write);
+    gpu::bind_pso(commands, scene->scatter_pso);
+    gpu::dispatch(commands, (SceneScatterRoot*)gpu,
+                  {.x = (count + scene_scatter_group_size - 1u) / scene_scatter_group_size, .y = 1u, .z = 1u});
+    gpu::barrier(commands, gpu::Stage::compute, gpu::Access::shader_write, gpu::Stage::all_commands,
+                 gpu::Access::shader_read | gpu::Access::transfer_read);
+}
+
 void scene_record_updates(Scene* scene, gpu::CommandBuffer* commands)
 {
     scene->recorded = true;
@@ -340,35 +467,38 @@ void scene_record_updates(Scene* scene, gpu::CommandBuffer* commands)
         scene->uploads_pending   = false;
     }
 
-    const u32 count = scene->transform_count > scene->static_mesh_count ? scene->transform_count : scene->static_mesh_count;
-    if (count == 0u)
+    if (scene->static_mesh_count > 0u || scene->transform_count > 0u)
     {
-        return;
+        scatter_staged(scene, commands);
     }
 
-    *slice_cpu<SceneScatterRoot>(scene, 0u) = {
-        .transform_indices   = slice_gpu<u32>(scene, scene->slice.transform_indices),
-        .transform_values    = slice_gpu<float3x4>(scene, scene->slice.transform_values),
-        .transforms          = scene->gpu_transforms,
-        .static_mesh_indices = slice_gpu<u32>(scene, scene->slice.static_mesh_indices),
-        .static_mesh_values  = slice_gpu<GpuStaticMesh>(scene, scene->slice.static_mesh_values),
-        .static_meshes       = scene->gpu_static_meshes,
-        .transform_count     = scene->transform_count,
-        .static_mesh_count   = scene->static_mesh_count,
-        .root_alignment_padding0 = {0u, 0u},
-    };
-
-    // Earlier readers of the scene arrays finish before the scatter overwrites them; later ones see the result.
-    gpu::barrier(commands, gpu::Stage::all_commands, gpu::Access::shader_read | gpu::Access::transfer_read,
-                 gpu::Stage::compute, gpu::Access::shader_write);
-    gpu::bind_pso(commands, scene->scatter_pso);
-    gpu::dispatch(commands, slice_gpu<SceneScatterRoot>(scene, 0u),
-                  {.x = (count + scene_scatter_group_size - 1u) / scene_scatter_group_size, .y = 1u, .z = 1u});
-    gpu::barrier(commands, gpu::Stage::compute, gpu::Access::shader_write, gpu::Stage::all_commands,
-                 gpu::Access::shader_read | gpu::Access::transfer_read);
+    // With no instance changes left staged, every reference to a removed mesh is gone once this frame completes.
+    if (scene->static_mesh_count == 0u)
+    {
+        for (const MeshHandle handle : scene->retiring_meshes)
+        {
+            MeshSlot* slot = scene->meshes.get(handle);
+            if (!slot->retire_scheduled)
+            {
+                slot->retire_scheduled = true;
+                slot->retire_frame     = scene->frame_index;
+            }
+        }
+    }
 }
 
 gpu::TimelinePoint scene_upload_completion(const Scene* scene) { return scene->upload_completion; }
+
+SceneUploadStats scene_upload_stats(const Scene* scene)
+{
+    return {
+        .ring_capacity         = scene->ring_capacity,
+        .ring_peak_bytes       = scene->ring_peak_bytes,
+        .deferred_frames       = scene->deferred_frames,
+        .pending_transforms    = scene->transform_count,
+        .pending_static_meshes = scene->static_mesh_count,
+    };
+}
 
 GpuScene scene_gpu_view(const Scene* scene)
 {
