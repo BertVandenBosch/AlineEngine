@@ -4,6 +4,7 @@
 #include "core/Pool.hpp"
 #include "import/GltfImport.hpp"
 #include "gfx/scene_shared.h"
+#include "gfx/ShaderLibrary.hpp"
 
 #include <NoGraphicsAPI/NoGraphicsAPI.hpp>
 
@@ -49,10 +50,10 @@ struct SceneUploadStats
 
 struct Scene; // opaque
 
-// scatter_shader: compiled scene_scatter.slang (SPIR-V on Vulkan, metallib on Metal).
+// The scatter PSO is created in `shaders`, which must outlive the scene.
 // The scene's CPU arrays are allocated from `arena`, which must outlive it. Null on failure.
 [[nodiscard]] Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc,
-                                  gpu::ByteSpan scatter_shader);
+                                  ShaderLibrary* shaders);
 void scene_destroy(Scene* scene); // after gpu::wait_idle
 
 // Uploads the mesh blob and its GpuMesh record; the ClusterMesh may be freed right after. Empty handle when full.

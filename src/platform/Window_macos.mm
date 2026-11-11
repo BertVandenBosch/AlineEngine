@@ -5,6 +5,7 @@
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -66,8 +67,7 @@ Window* window_create(const WindowDesc& desc)
 
 void window_destroy(Window* window)
 {
-    if (!window)
-        return;
+    assert(window);
     @autoreleasepool
     {
         [window->ns_window close];

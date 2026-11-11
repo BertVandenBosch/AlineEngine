@@ -3,6 +3,8 @@
 #include <NoGraphicsAPIUtility/heap_allocator.hpp>
 #include <NoGraphicsAPIUtility/upload_queue.hpp>
 
+ALINE_SHADER(scene_scatter, "gfx/shaders/scene_scatter.slang", compute, "computeMain");
+
 // CPU-side record of an instance: enough to rewrite its GPU record (flags changes, destroy).
 struct StaticMeshRecord
 {
@@ -65,9 +67,9 @@ static u32 fit_count(u32 total, u64 bytes, u64 value_size)
 struct Scene
 {
     Scene(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc, gpu::GpuHeap scene_heap,
-          gpu::GpuHeap blob_heap, gpu::GpuHeap upload_heap, u64 ring_capacity, gpu::PSO* scatter_pso)
+          gpu::GpuHeap blob_heap, gpu::GpuHeap upload_heap, u64 ring_capacity, ShaderLibrary* shaders, PsoHandle scatter_pso)
         : desc(desc), device(device), scene_heap(scene_heap), blob_heap(blob_heap), upload_heap(upload_heap),
-          scatter_pso(scatter_pso), blobs(blob_heap.range, desc.max_meshes), uploads(device),
+          shaders(shaders), scatter_pso(scatter_pso), blobs(blob_heap.range, desc.max_meshes), uploads(device),
           transforms(arena, desc.max_transforms), static_meshes(arena, desc.max_static_meshes), meshes(arena, desc.max_meshes),
           transform_pending(arena, desc.max_transforms), static_mesh_pending(arena, desc.max_static_meshes),
           staged_transform_indices(arena, desc.max_transforms), staged_transform_values(arena, desc.max_transforms),
@@ -94,7 +96,8 @@ struct Scene
     gpu::GpuHeap       scene_heap;  // gpu_only: transforms | static meshes | meshes
     gpu::GpuHeap       blob_heap;   // gpu_only: mesh blobs
     gpu::GpuHeap       upload_heap; // cpu_visible: ring of per-frame scatter blocks
-    gpu::PSO*          scatter_pso;
+    ShaderLibrary*     shaders;
+    PsoHandle          scatter_pso;
     gpu::HeapAllocator blobs;
     gpu::UploadQueue   uploads; // one-shot mesh uploads
 
@@ -188,7 +191,7 @@ static const MeshSlot* live_mesh(Scene* scene, MeshHandle mesh)
     return slot && !slot->removed ? slot : nullptr;
 }
 
-Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc, gpu::ByteSpan scatter_shader)
+Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc, ShaderLibrary* shaders)
 {
     assert(desc.max_transforms > 0u && desc.max_transforms <= TransformHandle::MAX_INDEX + 1u);
     assert(desc.max_static_meshes > 0u && desc.max_static_meshes <= StaticMeshHandle::MAX_INDEX + 1u);
@@ -204,14 +207,15 @@ Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDes
     const gpu::GpuHeap scene_heap  = gpu::create_gpu_heap(device, scene_bytes, gpu::MemoryType::gpu_only);
     const gpu::GpuHeap blob_heap   = gpu::create_gpu_heap(device, desc.mesh_blob_bytes, gpu::MemoryType::gpu_only);
     const gpu::GpuHeap upload_heap = gpu::create_gpu_heap(device, ring_capacity);
-    gpu::PSO* const    scatter_pso = gpu::create_compute_pso(
-        device, {.code = scatter_shader, .entry_point = "computeMain", .threadgroup_size = {.x = scene_scatter_group_size, .y = 1, .z = 1}});
+    const PsoHandle    scatter_pso =
+        pso_create_compute(shaders, scene_scatter, {.x = scene_scatter_group_size, .y = 1, .z = 1});
 
     Scene* scene = nullptr;
     if (scene_heap.owner && blob_heap.owner && upload_heap.owner && scatter_pso)
     {
         const MemoryHandle memory =
-            arena.create(&scene, arena, device, desc, scene_heap, blob_heap, upload_heap, ring_capacity, scatter_pso);
+            arena.create(&scene, arena, device, desc, scene_heap, blob_heap, upload_heap, ring_capacity, shaders,
+                         scatter_pso);
         if (memory.is_valid() && !scene->uploads.valid())
         {
             scene->~Scene();
@@ -220,10 +224,7 @@ Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDes
     }
     if (!scene)
     {
-        if (scatter_pso)
-        {
-            gpu::destroy_pso(scatter_pso);
-        }
+        pso_destroy(shaders, scatter_pso);
         for (const gpu::GpuHeap& heap : {scene_heap, blob_heap, upload_heap})
         {
             if (heap.owner)
@@ -237,14 +238,10 @@ Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDes
 
 void scene_destroy(Scene* scene)
 {
-    if (!scene)
-    {
-        return;
-    }
+    assert(scene);
     const gpu::GpuHeap heaps[3] = {scene->scene_heap, scene->blob_heap, scene->upload_heap};
-    gpu::PSO* const    pso      = scene->scatter_pso;
+    pso_destroy(scene->shaders, scene->scatter_pso);
     scene->~Scene(); // destroys the upload queue; the arena memory itself is not reclaimed
-    gpu::destroy_pso(pso);
     for (const gpu::GpuHeap& heap : heaps)
     {
         gpu::destroy_gpu_heap(heap);
@@ -451,7 +448,7 @@ static void scatter_staged(Scene* scene, gpu::CommandBuffer* commands)
     // Earlier readers of the scene arrays finish before the scatter overwrites them; later ones see the result.
     gpu::barrier(commands, gpu::Stage::all_commands, gpu::Access::shader_read | gpu::Access::transfer_read,
                  gpu::Stage::compute, gpu::Access::shader_write);
-    gpu::bind_pso(commands, scene->scatter_pso);
+    gpu::bind_pso(commands, pso_get(scene->shaders, scene->scatter_pso));
     gpu::dispatch(commands, (SceneScatterRoot*)gpu,
                   {.x = (count + scene_scatter_group_size - 1u) / scene_scatter_group_size, .y = 1u, .z = 1u});
     gpu::barrier(commands, gpu::Stage::compute, gpu::Access::shader_write, gpu::Stage::all_commands,

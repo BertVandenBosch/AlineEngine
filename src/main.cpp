@@ -8,18 +8,25 @@
 #include "core/Containers.hpp"
 #include "core/Pool.hpp"
 #include "core/StringBuilder.hpp"
+#include "gfx/ShaderLibrary.hpp"
 #include "platform/Window.hpp"
 
 #include <NoGraphicsAPI/NoGraphicsAPI.hpp>
-#include <math.h>
 
 void run_gltf_import_tests(); // import/GltfImportTests.cpp
 void run_scene_tests();       // gfx/SceneTests.cpp
 
-// Opens a window and presents an animated clear color until it is closed.
+ALINE_SHADER(debug_background_vs, "gfx/shaders/debug_background.slang", vertex, "vertexMain");
+ALINE_SHADER(debug_background_fs, "gfx/shaders/debug_background.slang", fragment, "fragmentMain");
+
+// Opens a window and draws a fullscreen gradient until it is closed.
 static int run_window()
 {
     using namespace gpu;
+
+    // Until there is an input system, shader reload runs once at this frame (~10 s at 60 Hz):
+    // edit debug_background.slang before then to see it picked up.
+    constexpr u64 reload_test_frame = 600;
 
     Window* window = window_create({});
     if (!window)
@@ -32,15 +39,42 @@ static int run_window()
     }
     printf("Using %s\n", get_device_caps(device).device_name);
 
+    ArenaAllocator  arena(KB(64));
+    ArenaAllocator  scratch(KB(256)); // compiled shader bytes while a PSO is built
+    ShaderLibrary*  shaders     = shader_library_create(arena, scratch, device);
+    if (!shaders)
+    {
+        destroy_device(device);
+        window_destroy(window);
+        return 1;
+    }
+    ColorTargetDesc color       = {.format = Format::bgra8_srgb};
+    const PsoHandle background  = pso_create_graphics(shaders, debug_background_vs, debug_background_fs,
+                                                      {.color_targets = {&color, 1}});
+    if (!background)
+    {
+        shader_library_destroy(shaders);
+        destroy_device(device);
+        window_destroy(window);
+        return 1;
+    }
+
     constexpr u32 frames_in_flight = 2;
     TimelinePoint latest_completion{.semaphore = create_timeline_semaphore(device)};
     CommandPool*  command_pools[frames_in_flight];
     for (CommandPool*& pool : command_pools)
         pool = create_command_pool(device);
 
-    const double start_time = platform_time_seconds();
     while (window_pump(window))
     {
+        if (latest_completion.value == reload_test_frame)
+        {
+            const ShaderReloadResult reload = shader_library_reload(shaders);
+            printf("shader reload: build_ok=%d reloaded=%u failed=%u\n", reload.build_ok, reload.reloaded,
+                   reload.failed);
+            fflush(stdout);
+        }
+
         if (latest_completion.value >= frames_in_flight)
             wait_timeline({.semaphore = latest_completion.semaphore,
                            .value     = latest_completion.value - (frames_in_flight - 1)});
@@ -54,16 +88,9 @@ static int run_window()
             continue;
         }
 
-        const float t = float(platform_time_seconds() - start_time);
-        begin_render_pass(commands, {
-            .colors = {{
-                .render_view = frame.render_view,
-                .load        = LoadOp::clear,
-                .clear       = {.x = 0.5f + 0.5f * sinf(t),
-                                .y = 0.5f + 0.5f * sinf(t + 2.1f),
-                                .z = 0.5f + 0.5f * sinf(t + 4.2f)},
-            }},
-        });
+        begin_render_pass(commands, {.colors = {{.render_view = frame.render_view, .load = LoadOp::discard}}});
+        bind_pso(commands, pso_get(shaders, background));
+        draw(commands, {}, 3);
         end_render_pass(commands);
         end_commands(commands);
         latest_completion.value++;
@@ -74,6 +101,7 @@ static int run_window()
     for (CommandPool* pool : command_pools)
         destroy_command_pool(pool);
     destroy_timeline_semaphore(latest_completion.semaphore);
+    shader_library_destroy(shaders);
     destroy_device(device);
     window_destroy(window); // after the device: the swapchain uses its layer
     return 0;

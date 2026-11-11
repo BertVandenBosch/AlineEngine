@@ -1,12 +1,10 @@
-#define _CRT_SECURE_NO_WARNINGS // plain fopen for the shader file
-
 #include "gfx/Scene.hpp"
 
 #include <stdio.h>
 #include <string.h>
 
-#if !defined(ALINE_ROOT_DIR) || !defined(ALINE_SHADER_DIR) || !defined(ALINE_SHADER_EXTENSION)
-#error "ALINE_ROOT_DIR, ALINE_SHADER_DIR and ALINE_SHADER_EXTENSION are defined by premake5.lua"
+#if !defined(ALINE_ROOT_DIR)
+#error "ALINE_ROOT_DIR is defined by premake5.lua"
 #endif
 
 /*
@@ -20,6 +18,8 @@
 void run_scene_tests() { printf("scene tests skipped (asserts disabled)\n"); }
 
 #else
+
+ALINE_SHADER(scene_scatter, "gfx/shaders/scene_scatter.slang", compute, "computeMain"); // same as Scene.cpp
 
 namespace
 {
@@ -151,24 +151,6 @@ void check_mesh(TestGpu& state, Scene* scene, MeshHandle handle, const ClusterMe
     assert(memcmp(state.readback.range.cpu, blob, mesh.blob.num_elements) == 0);
 }
 
-// Reads the compiled scatter shader into the arena (16-byte aligned; SPIR-V needs 4).
-gpu::ByteSpan load_shader(ArenaAllocator<>& arena, const char* path)
-{
-    FILE* file = fopen(path, "rb");
-    if (!file)
-    {
-        return {};
-    }
-    fseek(file, 0, SEEK_END);
-    const long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    u8*                data   = nullptr;
-    const MemoryHandle memory = arena.create_array<u8>(data, (u32)size);
-    const bool         ok     = memory.is_valid() && fread(data, 1, (size_t)size, file) == (size_t)size;
-    fclose(file);
-    return ok ? gpu::ByteSpan(data, (size_t)size) : gpu::ByteSpan();
-}
-
 // Imports a sample model into scratch arena memory, keeping a copy of the blob for check_mesh.
 ClusterMesh import_sample(ArenaAllocator<>& scratch, const char* relative, u8* blob_copy, u64 blob_capacity)
 {
@@ -178,6 +160,21 @@ ClusterMesh import_sample(ArenaAllocator<>& scratch, const char* relative, u8* b
     assert(import_gltf(scratch, path, mesh) == GltfImportResult::ok && mesh.blob.num_elements <= blob_capacity);
     memcpy(blob_copy, mesh.blob.data, mesh.blob.num_elements);
     return mesh;
+}
+// Reload with unchanged shaders keeps every PSO; handles resolve to null once destroyed.
+void test_shader_reload(ShaderLibrary* shaders)
+{
+    const PsoHandle pso = pso_create_compute(shaders, scene_scatter, {.x = scene_scatter_group_size, .y = 1, .z = 1});
+    assert(pso && pso_get(shaders, pso));
+    gpu::PSO* const before = pso_get(shaders, pso);
+
+    const ShaderReloadResult reload = shader_library_reload(shaders);
+    assert(reload.build_ok && reload.reloaded == 0u && reload.failed == 0u);
+    assert(pso_get(shaders, pso) == before);
+
+    pso_destroy(shaders, pso);
+    assert(!pso_get(shaders, pso));
+    (void)before;
 }
 } // namespace
 
@@ -190,22 +187,22 @@ void run_scene_tests()
         return;
     }
 
-    ArenaAllocator arena(MB(1));    // shader + the scene's CPU arrays
-    ArenaAllocator scratch(MB(16)); // glTF imports, rewound once uploaded
+    ArenaAllocator arena(MB(1));    // shader library + the scene's CPU arrays
+    ArenaAllocator scratch(MB(16)); // glTF imports, rewound once uploaded; compiled shader bytes
     TestGpu        state = {.device = init.device};
     state.timeline       = gpu::create_timeline_semaphore(state.device);
     state.pool           = gpu::create_command_pool(state.device);
     state.readback       = gpu::create_gpu_heap(state.device, MB(1), gpu::MemoryType::readback);
 
-    const gpu::ByteSpan shader = load_shader(arena, ALINE_SHADER_DIR "/scene_scatter" ALINE_SHADER_EXTENSION);
-    assert(shader.data && "scene_scatter shader missing");
+    ShaderLibrary* shaders = shader_library_create(arena, scratch, state.device, 16u);
+    assert(shaders);
     const auto create_scene = [&](u64 upload_ring_bytes)
     {
         Scene* created = scene_create(arena, state.device,
                                       {.max_transforms = test_transforms, .max_static_meshes = test_static_meshes,
                                        .max_meshes = test_meshes, .mesh_blob_bytes = MB(1), .frames_in_flight = 2u,
                                        .upload_ring_bytes = upload_ring_bytes},
-                                      shader);
+                                      shaders);
         assert(created);
         return created;
     };
@@ -387,6 +384,9 @@ void run_scene_tests()
         gpu::wait_idle(state.device);
         scene_destroy(ring);
     }
+
+    test_shader_reload(shaders);
+    shader_library_destroy(shaders);
 
     gpu::destroy_gpu_heap(state.readback);
     gpu::destroy_command_pool(state.pool);
