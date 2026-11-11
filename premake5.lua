@@ -647,6 +647,11 @@ do
 		"src/meshoptimizer/**",
 		"src/tinygltf/**",
 	}
+	-- Platform layer (src/platform): one implementation file per OS.
+	if METAL then
+		files { "src/platform/**.mm" }
+		removefiles { "src/platform/*_win32.cpp" }
+	end
 
 	-- Repository root, so tests can open the sample models in the submodules.
 	defines { 'ALINE_ROOT_DIR="' .. path.getabsolute(".") .. '"' }
@@ -703,6 +708,7 @@ do
 		"tinygltf",
 	}
 	backend_links()
+	links { METAL and "AppKit.framework" or "user32" } -- src/platform window
 
 	-- C++26 is requested explicitly so the exact clang flag is used
 	-- regardless of the premake version's cppdialect support.

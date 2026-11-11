@@ -8,9 +8,76 @@
 #include "core/Containers.hpp"
 #include "core/Pool.hpp"
 #include "core/StringBuilder.hpp"
+#include "platform/Window.hpp"
+
+#include <NoGraphicsAPI/NoGraphicsAPI.hpp>
+#include <math.h>
 
 void run_gltf_import_tests(); // import/GltfImportTests.cpp
 void run_scene_tests();       // gfx/SceneTests.cpp
+
+// Opens a window and presents an animated clear color until it is closed.
+static int run_window()
+{
+    using namespace gpu;
+
+    Window* window = window_create({});
+    if (!window)
+        return 1;
+    Device* device = create_device({.window = window_native_handle(window), .swapchain_format = Format::bgra8_srgb}).device;
+    if (!device)
+    {
+        window_destroy(window);
+        return 1;
+    }
+    printf("Using %s\n", get_device_caps(device).device_name);
+
+    constexpr u32 frames_in_flight = 2;
+    TimelinePoint latest_completion{.semaphore = create_timeline_semaphore(device)};
+    CommandPool*  command_pools[frames_in_flight];
+    for (CommandPool*& pool : command_pools)
+        pool = create_command_pool(device);
+
+    const double start_time = platform_time_seconds();
+    while (window_pump(window))
+    {
+        if (latest_completion.value >= frames_in_flight)
+            wait_timeline({.semaphore = latest_completion.semaphore,
+                           .value     = latest_completion.value - (frames_in_flight - 1)});
+        CommandPool* command_pool = command_pools[latest_completion.value % frames_in_flight];
+        reset_command_pool(command_pool);
+        CommandBuffer*       commands = begin_commands(command_pool);
+        const SwapchainFrame frame    = acquire(commands);
+        if (!frame.render_view)
+        {
+            end_commands(commands);
+            continue;
+        }
+
+        const float t = float(platform_time_seconds() - start_time);
+        begin_render_pass(commands, {
+            .colors = {{
+                .render_view = frame.render_view,
+                .load        = LoadOp::clear,
+                .clear       = {.x = 0.5f + 0.5f * sinf(t),
+                                .y = 0.5f + 0.5f * sinf(t + 2.1f),
+                                .z = 0.5f + 0.5f * sinf(t + 4.2f)},
+            }},
+        });
+        end_render_pass(commands);
+        end_commands(commands);
+        latest_completion.value++;
+        submit_and_present(device, {.commands = {commands}, .completion = latest_completion});
+    }
+
+    wait_idle(device);
+    for (CommandPool* pool : command_pools)
+        destroy_command_pool(pool);
+    destroy_timeline_semaphore(latest_completion.semaphore);
+    destroy_device(device);
+    window_destroy(window); // after the device: the swapchain uses its layer
+    return 0;
+}
 
 static void run_core_tests()
 {
@@ -242,5 +309,5 @@ int main()
 
     delete[] getallen;
 
-    return 0;
+    return run_window();
 }
