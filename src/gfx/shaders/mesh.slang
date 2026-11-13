@@ -7,13 +7,31 @@
 GPU_ROOT(MeshDrawRoot, root);
 
 static const float3 light_direction = float3(0.408248f, 0.816497f, 0.408248f); // unit, towards the light
-static const float3 albedo          = float3(0.8f, 0.8f, 0.8f);
 
 struct VertexOutput
 {
     float4 position : SV_Position;
     float3 normal : NORMAL0;
+    nointerpolation uint cluster : CLUSTER0;
 };
+
+// Integer hash (lowbias32): neighbouring cluster indices get unrelated colors.
+uint hash(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16;
+    return value;
+}
+
+// Random color per cluster, kept away from black so the lighting stays readable.
+float3 cluster_color(uint cluster)
+{
+    uint bits = hash(cluster);
+    return 0.2f + 0.8f * float3(uint3(bits & 0xFFu, (bits >> 8) & 0xFFu, (bits >> 16) & 0xFFu)) / 255.0f;
+}
 
 // Grid steps from the cluster anchor: x bits 0-20, y 21-41, z 42-62.
 float3 decode_position(MeshPosition position)
@@ -41,6 +59,7 @@ VertexOutput vertexMain(uint vertex_id : SV_VertexID, uint cluster_index : SV_In
     MeshCluster cluster = mesh.clusters[cluster_index];
 
     VertexOutput output;
+    output.cluster = cluster_index;
     uint triangle = vertex_id / 3u;
     if (triangle > (cluster.triangles >> 24))
     {
@@ -62,5 +81,5 @@ VertexOutput vertexMain(uint vertex_id : SV_VertexID, uint cluster_index : SV_In
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target0
 {
-    return float4(albedo * saturate(dot(normalize(input.normal), light_direction)), 1.0f);
+    return float4(cluster_color(input.cluster) * saturate(dot(normalize(input.normal), light_direction)), 1.0f);
 }
