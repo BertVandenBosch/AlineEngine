@@ -306,7 +306,12 @@ gpu::PSO* pso_get(const ShaderLibrary* library, PsoHandle pso)
 // Compiles the shaders whose sources (or includes) changed; ninja prints its own progress and errors.
 static bool build_shaders()
 {
+#ifdef _WIN32
+    // cmd /c strips the first and last quote, so wrap the whole line to keep quoted paths with spaces intact.
+    const int status = system("\"\"" ALINE_NINJA "\" -C \"" ALINE_BUILD_DIR "\" shaders\"");
+#else
     const int status = system("\"" ALINE_NINJA "\" -C \"" ALINE_BUILD_DIR "\" shaders");
+#endif
     fflush(stdout);
     return status == 0;
 }

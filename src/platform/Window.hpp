@@ -5,7 +5,7 @@
 /*
  * Lean, platform-agnostic native window: just enough to give NoGraphicsAPI a
  * surface to present to. One implementation file per platform
- * (Window_macos.mm; Win32 still to come). Single-threaded: create, pump and
+ * (Window_macos.mm, Window_win32.cpp). Single-threaded: create, pump and
  * destroy on the main thread.
  */
 
