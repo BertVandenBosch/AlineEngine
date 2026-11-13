@@ -66,15 +66,33 @@ static u32 fit_count(u32 total, u64 bytes, u64 value_size)
 
 struct Scene
 {
-    Scene(ArenaAllocator<>& arena, gpu::Device* device, const SceneDesc& desc, gpu::GpuHeap scene_heap,
-          gpu::GpuHeap blob_heap, gpu::GpuHeap upload_heap, u64 ring_capacity, ShaderLibrary* shaders, PsoHandle scatter_pso)
-        : desc(desc), device(device), scene_heap(scene_heap), blob_heap(blob_heap), upload_heap(upload_heap),
-          shaders(shaders), scatter_pso(scatter_pso), blobs(blob_heap.range, desc.max_meshes), uploads(device),
-          transforms(arena, desc.max_transforms), static_meshes(arena, desc.max_static_meshes), meshes(arena, desc.max_meshes),
-          transform_pending(arena, desc.max_transforms), static_mesh_pending(arena, desc.max_static_meshes),
-          staged_transform_indices(arena, desc.max_transforms), staged_transform_values(arena, desc.max_transforms),
-          staged_static_mesh_indices(arena, desc.max_static_meshes), staged_static_mesh_values(arena, desc.max_static_meshes),
-          retiring_meshes(arena, desc.max_meshes), ring_capacity(ring_capacity), frame_ring_ends(arena, desc.frames_in_flight)
+	// Everything scene_create acquires before constructing the Scene.
+	struct Args
+	{
+    ArenaAllocator<>& arena;
+    gpu::Device*      device;
+    const SceneDesc&  desc;
+    gpu::GpuHeap      scene_heap;
+    gpu::GpuHeap      blob_heap;
+    gpu::GpuHeap      upload_heap;
+    u64               ring_capacity;
+    ShaderLibrary*    shaders;
+    PsoHandle         scatter_pso;
+	};
+
+    explicit Scene(const Args& init)
+        : desc(init.desc), device(init.device), scene_heap(init.scene_heap), blob_heap(init.blob_heap),
+          upload_heap(init.upload_heap), shaders(init.shaders), scatter_pso(init.scatter_pso),
+          blobs(init.blob_heap.range, init.desc.max_meshes), uploads(init.device),
+          transforms(init.arena, init.desc.max_transforms), static_meshes(init.arena, init.desc.max_static_meshes),
+          meshes(init.arena, init.desc.max_meshes), transform_pending(init.arena, init.desc.max_transforms),
+          static_mesh_pending(init.arena, init.desc.max_static_meshes),
+          staged_transform_indices(init.arena, init.desc.max_transforms),
+          staged_transform_values(init.arena, init.desc.max_transforms),
+          staged_static_mesh_indices(init.arena, init.desc.max_static_meshes),
+          staged_static_mesh_values(init.arena, init.desc.max_static_meshes),
+          retiring_meshes(init.arena, init.desc.max_meshes), ring_capacity(init.ring_capacity),
+          frame_ring_ends(init.arena, init.desc.frames_in_flight)
     {
         // Pools and lists are allocated at full capacity up front, so nothing ever regrows (the arena can't free).
         transform_pending.resize(desc.max_transforms);
@@ -213,9 +231,15 @@ Scene* scene_create(ArenaAllocator<>& arena, gpu::Device* device, const SceneDes
     Scene* scene = nullptr;
     if (scene_heap.owner && blob_heap.owner && upload_heap.owner && scatter_pso)
     {
-        const MemoryHandle memory =
-            arena.create(&scene, arena, device, desc, scene_heap, blob_heap, upload_heap, ring_capacity, shaders,
-                         scatter_pso);
+        const MemoryHandle memory = arena.create(&scene, Scene::Args{.arena         = arena,
+                                                                   .device        = device,
+                                                                   .desc          = desc,
+                                                                   .scene_heap    = scene_heap,
+                                                                   .blob_heap     = blob_heap,
+                                                                   .upload_heap   = upload_heap,
+                                                                   .ring_capacity = ring_capacity,
+                                                                   .shaders       = shaders,
+                                                                   .scatter_pso   = scatter_pso});
         if (memory.is_valid() && !scene->uploads.valid())
         {
             scene->~Scene();

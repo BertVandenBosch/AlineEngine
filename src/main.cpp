@@ -8,10 +8,15 @@
 #include "core/Containers.hpp"
 #include "core/Pool.hpp"
 #include "core/StringBuilder.hpp"
+#include "gfx/Scene.hpp"
 #include "gfx/ShaderLibrary.hpp"
+#include "gfx/mesh_shared.h"
+#include "import/GltfImport.hpp"
 #include "platform/Window.hpp"
 
 #include <NoGraphicsAPI/NoGraphicsAPI.hpp>
+#include <NoGraphicsAPIUtility/math.hpp>
+#include <NoGraphicsAPIUtility/texture_allocator.hpp>
 
 void run_gltf_import_tests(); // import/GltfImportTests.cpp
 void run_scene_tests();       // gfx/SceneTests.cpp
@@ -19,14 +24,38 @@ void run_scene_tests();       // gfx/SceneTests.cpp
 ALINE_SHADER(debug_background_vs, "gfx/shaders/debug_background.slang", vertex, "vertexMain");
 ALINE_SHADER(debug_background_fs, "gfx/shaders/debug_background.slang", fragment, "fragmentMain");
 
-// Opens a window and draws a fullscreen gradient until it is closed.
+ALINE_SHADER(mesh_vs, "gfx/shaders/mesh.slang", vertex, "vertexMain");
+ALINE_SHADER(mesh_fs, "gfx/shaders/mesh.slang", fragment, "fragmentMain");
+
+//TODO: handle this gracefully inside import directory
+static const char* asset(const char* relative)
+{
+    static char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", ALINE_ROOT_DIR, relative);
+    return path;
+}
+
+// Opens a window and draws the imported pirate, N.L lit, over a fullscreen gradient until it is closed.
 static int run_window()
 {
     using namespace gpu;
 
     // Until there is an input system, shader reload runs once at this frame (~10 s at 60 Hz):
-    // edit debug_background.slang before then to see it picked up.
+    // edit debug_background.slang or mesh.slang before then to see it picked up.
     constexpr u64 reload_test_frame = 600;
+    constexpr u32 frames_in_flight  = 2;
+
+    ArenaAllocator         scratch_import(MB(4));
+    ClusterMesh            pirate_cpu    = {};
+    const GltfImportResult import_result = import_gltf(scratch_import, asset("src/meshoptimizer/demo/pirate.glb"), pirate_cpu);
+    if (import_result != GltfImportResult::ok)
+    {
+        printf("pirate import failed (%u)\n", (u32)import_result);
+        return 1;
+    }
+    // Drawn without LOD selection: LOD0 is the leading cluster range.
+    const u32    pirate_clusters = pirate_cpu.lod_count > 1u ? pirate_cpu.lods[1].first_cluster : pirate_cpu.clusters.num_elements;
+    const float4 pirate_sphere   = pirate_cpu.sphere;
 
     Window* window = window_create({});
     if (!window)
@@ -39,7 +68,7 @@ static int run_window()
     }
     printf("Using %s\n", get_device_caps(device).device_name);
 
-    ArenaAllocator  arena(KB(64));
+    ArenaAllocator  arena(MB(64));
     ArenaAllocator  scratch(KB(256)); // compiled shader bytes while a PSO is built
     ShaderLibrary*  shaders     = shader_library_create(arena, scratch, device);
     if (!shaders)
@@ -48,18 +77,59 @@ static int run_window()
         window_destroy(window);
         return 1;
     }
-    ColorTargetDesc color       = {.format = Format::bgra8_srgb};
-    const PsoHandle background  = pso_create_graphics(shaders, debug_background_vs, debug_background_fs,
-                                                      {.color_targets = {&color, 1}});
-    if (!background)
+
+    Scene* scene = scene_create(arena, device, {.frames_in_flight = frames_in_flight}, shaders);
+
+    // Upload the mesh to the scene and the GPU
+    StaticMeshHandle pirate_static_mesh = {};
+    if (scene)
     {
+        const MeshHandle      pirate_mesh      = scene_add_mesh(scene, pirate_cpu);
+        const TransformHandle pirate_transform = scene_create_transform(scene, math::identity3x4());
+        pirate_static_mesh                     = scene_create_static_mesh(scene, pirate_mesh, pirate_transform);
+    }
+
+    // The pirate mesh data is queued for GPU upload from a host visible heap: the CPU copy is no longer needed.
+    scratch_import.free_all();
+
+    ColorTargetDesc color      = {.format = Format::bgra8_srgb};
+    const PsoHandle background = pso_create_graphics(shaders, debug_background_vs, debug_background_fs,
+                                                     {.color_targets = {&color, 1}, .depth_format = Format::d32_float});
+    const PsoHandle render_mesh_pso = pso_create_graphics(shaders, mesh_vs, mesh_fs,
+                                                          {.color_targets = {&color, 1},
+                                                           .depth_format  = Format::d32_float,
+                                                           .rasterization = {.cull = CullMode::clockwise}});
+
+    // One draw root per frame in flight, rewritten by the CPU each frame.
+    const GpuHeap     root_heap  = create_gpu_heap(device, sizeof(MeshDrawRoot) * frames_in_flight);
+    const TextureHeap depth_heap = create_texture_heap(device, MB(64));
+    if (!pirate_static_mesh.valid() || !background || !render_mesh_pso || !root_heap.owner || !depth_heap.owner)
+    {
+        if (depth_heap.owner)
+            destroy_texture_heap(depth_heap);
+        if (root_heap.owner)
+            destroy_gpu_heap(root_heap);
+        if (scene)
+            scene_destroy(scene);
         shader_library_destroy(shaders);
         destroy_device(device);
         window_destroy(window);
         return 1;
     }
+    MeshDrawRoot* const roots_cpu = (MeshDrawRoot*)root_heap.range.cpu;
+    MeshDrawRoot* const roots_gpu = (MeshDrawRoot*)root_heap.range.gpu;
 
-    constexpr u32 frames_in_flight = 2;
+    TextureAllocator depth_allocator(device, depth_heap, 1);
+    PlacedTexture    depth        = {};
+    RenderView*      depth_view   = nullptr;
+    uint32x2         depth_extent = {};
+
+    // Camera on +Z, framing the bounding sphere.
+    const float3   pirate_center = {.x = pirate_sphere.x, .y = pirate_sphere.y, .z = pirate_sphere.z};
+    const float4x4 view          = math::look_at_rh({.x = pirate_center.x, .y = pirate_center.y, .z = pirate_center.z + 3.0f * pirate_sphere.w},
+                                                    pirate_center, {.x = 0.0f, .y = 1.0f, .z = 0.0f});
+    const GpuScene gpu_scene     = scene_gpu_view(scene);
+
     TimelinePoint latest_completion{.semaphore = create_timeline_semaphore(device)};
     CommandPool*  command_pools[frames_in_flight];
     for (CommandPool*& pool : command_pools)
@@ -75,32 +145,85 @@ static int run_window()
             fflush(stdout);
         }
 
-        if (latest_completion.value >= frames_in_flight)
-            wait_timeline({.semaphore = latest_completion.semaphore,
-                           .value     = latest_completion.value - (frames_in_flight - 1)});
-        CommandPool* command_pool = command_pools[latest_completion.value % frames_in_flight];
+        // Frame f waits for frame f - frames_in_flight, as scene_begin_frame requires.
+        const u64 frame_index = latest_completion.value;
+        if (frame_index >= frames_in_flight)
+            wait_timeline({.semaphore = latest_completion.semaphore, .value = frame_index - (frames_in_flight - 1)});
+        CommandPool* command_pool = command_pools[frame_index % frames_in_flight];
         reset_command_pool(command_pool);
         CommandBuffer*       commands = begin_commands(command_pool);
         const SwapchainFrame frame    = acquire(commands);
         if (!frame.render_view)
         {
+            // Never submitted: leave the scene alone so no staged change is consumed by these commands.
             end_commands(commands);
             continue;
         }
 
-        begin_render_pass(commands, {.colors = {{.render_view = frame.render_view, .load = LoadOp::discard}}});
+        scene_begin_frame(scene, frame_index);
+        scene_record_updates(scene, commands);
+
+        if (frame.extent.x != depth_extent.x || frame.extent.y != depth_extent.y)
+        {
+            if (depth.texture)
+            {
+                wait_timeline(latest_completion); // submitted frames may still use the old depth target
+                destroy_render_view(depth_view);
+                depth_allocator.free(depth);
+            }
+            depth = depth_allocator.allocate({.extent = {.x = frame.extent.x, .y = frame.extent.y, .z = 1},
+                                              .format = Format::d32_float,
+                                              .usage  = TextureUsage::depth_stencil_attachment});
+            assert(depth.texture && "depth target does not fit its texture heap");
+            initialize_texture(commands, depth.texture);
+            depth_view   = create_render_view(depth.texture);
+            depth_extent = frame.extent;
+        }
+
+        float4x4 projection = math::perspective_rh_zo(45.0f * math::pi / 180.0f, float(frame.extent.x) / float(frame.extent.y),
+                                                      0.05f * pirate_sphere.w, 20.0f * pirate_sphere.w);
+        projection.rows[1].y = -projection.rows[1].y;
+        const u32 root_slot  = (u32)(frame_index % frames_in_flight);
+        roots_cpu[root_slot] = {
+            .view_projection = projection * view,
+            .meshes          = gpu_scene.meshes,
+            .transforms      = gpu_scene.transforms,
+            .static_meshes   = gpu_scene.static_meshes,
+            .static_mesh     = (u32)pirate_static_mesh.index,
+        };
+
+        barrier(commands, Stage::depth_stencil_tests, Access::depth_stencil_write, Stage::depth_stencil_tests,
+                Access::depth_stencil_write);
+        begin_render_pass(commands, {.colors = {{.render_view = frame.render_view, .load = LoadOp::discard}},
+                                     .depth  = {.render_view = depth_view, .load = LoadOp::clear, .store = StoreOp::discard}});
         bind_pso(commands, pso_get(shaders, background));
         draw(commands, {}, 3);
+        set_depth_stencil(commands, {.depth_test = true, .depth_write = true});
+        bind_pso(commands, pso_get(shaders, render_mesh_pso));
+        draw(commands, roots_gpu + root_slot, cluster_max_triangles * 3u, pirate_clusters);
         end_render_pass(commands);
         end_commands(commands);
+
+        // Frames must not run before the mesh upload has landed.
+        const TimelinePoint upload = scene_upload_completion(scene);
         latest_completion.value++;
-        submit_and_present(device, {.commands = {commands}, .completion = latest_completion});
+        submit_and_present(device, {.commands   = {commands},
+                                    .waits      = upload.semaphore ? Span<const TimelinePoint>(&upload, 1u) : Span<const TimelinePoint>(),
+                                    .completion = latest_completion});
     }
 
     wait_idle(device);
     for (CommandPool* pool : command_pools)
         destroy_command_pool(pool);
     destroy_timeline_semaphore(latest_completion.semaphore);
+    if (depth.texture)
+    {
+        destroy_render_view(depth_view);
+        depth_allocator.free(depth);
+    }
+    destroy_texture_heap(depth_heap);
+    destroy_gpu_heap(root_heap);
+    scene_destroy(scene);
     shader_library_destroy(shaders);
     destroy_device(device);
     window_destroy(window); // after the device: the swapchain uses its layer
