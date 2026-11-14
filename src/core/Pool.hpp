@@ -16,7 +16,7 @@
  * so APIs handing out handles to different resources get type safety and
  * overload resolution for free (e.g. one handle type per GPU resource kind).
  */
-template <typename HandleT, u32 INDEX_BITS,
+template <typename HandleT, u32 INDEX_BITS = 16,
           u32 GEN_BITS = sizeof(HandleT) * 8u - INDEX_BITS, typename Tag = void>
 struct PoolHandle
 {
@@ -76,7 +76,7 @@ struct PoolHandle
  * of slots ever created, not the reserved capacity. Consumers may iterate the
  * dense array; freed slots keep their zeroed (T{}) payload.
  */
-template <typename T, typename PoolHandleT>
+template <typename T, typename PoolHandleT = PoolHandle<T>>
 class Pool
 {
   public:
