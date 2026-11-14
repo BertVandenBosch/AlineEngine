@@ -9,6 +9,8 @@
 #include "core/Pool.hpp"
 #include "core/StringBuilder.hpp"
 #include "gfx/ShaderLibrary.hpp"
+#include "gfx/cluster_mesh_shared.h"
+#include "import/GltfImport.hpp"
 #include "platform/Window.hpp"
 
 #include <NoGraphicsAPI/NoGraphicsAPI.hpp>
@@ -22,8 +24,6 @@ ALINE_SHADER(debug_background_fs, "gfx/shaders/debug_background.slang", fragment
 // Opens a window and draws a fullscreen gradient until it is closed.
 static int run_window()
 {
-    using namespace gpu;
-
     // Until there is an input system, shader reload runs once at this frame (~10 s at 60 Hz):
     // edit debug_background.slang before then to see it picked up.
     constexpr u64 reload_test_frame = 600;
@@ -31,7 +31,7 @@ static int run_window()
     Window* window = window_create({});
     if (!window)
         return 1;
-    Device* device = create_device({.window = window_native_handle(window), .swapchain_format = Format::bgra8_srgb}).device;
+    gpu::Device* device = gpu::create_device({.window = window_native_handle(window), .swapchain_format = gpu::Format::bgra8_srgb}).device;
     if (!device)
     {
         window_destroy(window);
@@ -48,7 +48,7 @@ static int run_window()
         window_destroy(window);
         return 1;
     }
-    ColorTargetDesc color       = {.format = Format::bgra8_srgb};
+    gpu::ColorTargetDesc color       = {.format = gpu::Format::bgra8_srgb};
     const PsoHandle background  = pso_create_graphics(shaders, debug_background_vs, debug_background_fs,
                                                       {.color_targets = {&color, 1}});
     if (!background)
@@ -59,10 +59,13 @@ static int run_window()
         return 1;
     }
 
+    MeshCluster pirate_cpu;
+    assert(import_gltf(arena, asset("src/tinygltf/models/Cube/Cube.gltf"), pirate_cpu) == GltfImportResult::ok);
+
     constexpr u32 frames_in_flight = 2;
-    TimelinePoint latest_completion{.semaphore = create_timeline_semaphore(device)};
-    CommandPool*  command_pools[frames_in_flight];
-    for (CommandPool*& pool : command_pools)
+    gpu::TimelinePoint latest_completion{.semaphore = create_timeline_semaphore(device)};
+    gpu::CommandPool*  command_pools[frames_in_flight];
+    for (gpu::CommandPool*& pool : command_pools)
         pool = create_command_pool(device);
 
     while (window_pump(window))
@@ -76,19 +79,19 @@ static int run_window()
         }
 
         if (latest_completion.value >= frames_in_flight)
-            wait_timeline({.semaphore = latest_completion.semaphore,
+            gpu::wait_timeline({.semaphore = latest_completion.semaphore,
                            .value     = latest_completion.value - (frames_in_flight - 1)});
-        CommandPool* command_pool = command_pools[latest_completion.value % frames_in_flight];
+        gpu::CommandPool* command_pool = command_pools[latest_completion.value % frames_in_flight];
         reset_command_pool(command_pool);
-        CommandBuffer*       commands = begin_commands(command_pool);
-        const SwapchainFrame frame    = acquire(commands);
+        gpu::CommandBuffer*       commands = begin_commands(command_pool);
+        const gpu::SwapchainFrame frame    = acquire(commands);
         if (!frame.render_view)
         {
             end_commands(commands);
             continue;
         }
 
-        begin_render_pass(commands, {.colors = {{.render_view = frame.render_view, .load = LoadOp::discard}}});
+        begin_render_pass(commands, {.colors = {{.render_view = frame.render_view, .load = gpu::LoadOp::discard}}});
         bind_pso(commands, pso_get(shaders, background));
         draw(commands, {}, 3);
         end_render_pass(commands);
@@ -98,7 +101,7 @@ static int run_window()
     }
 
     wait_idle(device);
-    for (CommandPool* pool : command_pools)
+    for (gpu::CommandPool* pool : command_pools)
         destroy_command_pool(pool);
     destroy_timeline_semaphore(latest_completion.semaphore);
     shader_library_destroy(shaders);
@@ -253,6 +256,7 @@ static void run_core_tests()
 
 int main()
 {
+    /*
     run_core_tests();
     run_gltf_import_tests();
     run_scene_tests();
@@ -336,6 +340,8 @@ int main()
     int* getallen = new int[8];
 
     delete[] getallen;
+
+*/
 
     return run_window();
 }

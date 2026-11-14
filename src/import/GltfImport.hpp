@@ -26,6 +26,8 @@ struct GltfImportSettings
 };
 
 /*
+ * CPU side cluster mesh representation
+ *
  * One GPU-ready blob, 16-byte aligned, at the top of the caller's arena:
  * [clusters | triangles | positions | attributes], each section 16-byte
  * aligned, padding zeroed. Every View aliases the blob, so uploading is a
